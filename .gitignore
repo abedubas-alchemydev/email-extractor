@@ -82,3 +82,11 @@ Thumbs.db
 credentials.md
 credentials.json
 service-account-*.json
+
+# prompts/ — working scratchpad between Cowork, Arvin, and CC CLI.
+# Keep the schema (TEMPLATE.md) and workflow doc (README.md) tracked; ignore
+# the individual task-level prompts. See prompts/README.md for the workflow.
+prompts/*
+!prompts/TEMPLATE.md
+!prompts/README.md
+!prompts/.gitkeep
