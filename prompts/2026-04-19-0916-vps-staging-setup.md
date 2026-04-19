@@ -18,8 +18,9 @@ Take a fresh remote VPS at `76.13.22.110` and turn it into a working **staging**
 
 ## Context
 
-- Target host: `76.13.22.110` (VPS, exact OS unknown — CC CLI checks during Step 1).
+- Target host: `76.13.22.110` (VPS, exact OS unknown — CC CLI checks during Step 2).
 - Access today: `root` via SSH key (key already on Arvin's local machine).
+- GitHub: canonical remote is `abedubas-alchemydev/email-extractor` (private). The local machine has multiple `gh` accounts; this project always runs under `abedubas-alchemydev` (same convention as `fis-lead-gen`). Step 1 handles the push.
 - Purpose: internal smoke-testing of the Email Extractor stack end-to-end on a real server, so we can validate the Docker Compose deployment pattern before the eventual Cloud Run migration post-merge with `fis-lead-gen`.
 - Prerequisites:
   - `prompts/2026-04-19-0840-initial-scaffold.md` must be **completed and committed** locally. The VPS pulls the repo over SSH/HTTPS; the scaffold's files (`docker-compose.yml`, `backend/Dockerfile`, `frontend/Dockerfile`) are what the VPS actually runs.
@@ -48,7 +49,64 @@ Run each block in order. CC CLI should use an SSH connection to `root@76.13.22.1
 
 Use `/plan` to confirm the execution order — especially the SSH-hardening sequence in Step 4 — before running anything on the remote host. Then proceed.
 
-### 1. Reach the host and detect the OS
+### 1. Push the scaffolded repo to GitHub (local machine)
+
+The VPS pulls code over the internet, so the repo must exist on GitHub before Step 7 can clone it. The local machine has multiple `gh` accounts (`abedubas-alchemydev`, `akosiArvin081596`, `arvinbedubas-vendoraph` — same convention as `fis-lead-gen`). All Email Extractor git operations run under **`abedubas-alchemydev`**.
+
+**1a. Commit any uncommitted edits to this prompt file itself.**
+
+When this VPS prompt was written, the scaffold prompt was mid-execution in parallel — which means the VPS prompt file may still show as modified-untracked when CC CLI starts this run. Commit it first (stage by name, zero AI attribution, Arvin's voice) so the push in 1b captures the current prompt state:
+
+```bash
+cd <repo-root>
+git status
+if ! git diff --quiet -- prompts/2026-04-19-0916-vps-staging-setup.md \
+   || git ls-files --others --exclude-standard -- prompts/2026-04-19-0916-vps-staging-setup.md | grep -q .; then
+  git add prompts/2026-04-19-0916-vps-staging-setup.md
+  git commit -m "docs(prompts): add github push prereq and deploy-key flow to vps staging prompt"
+fi
+git log -1 --pretty=full     # confirm no AI trailer
+```
+
+If `git status` shows any other modified/untracked files beyond this prompt, stop and surface them — do not bulk-commit. Scaffolding artifacts (build outputs, `.venv/`, `node_modules/`, `.env`) should all be gitignored already; anything else is a signal to pause.
+
+**1b. Switch to the correct `gh` account and sanity-check.**
+
+```bash
+gh auth switch --user abedubas-alchemydev --hostname github.com
+gh auth status
+
+git status                   # expect clean working tree
+git log --oneline            # expect the scaffold's 9 commits + the 1a prompt-file commit
+```
+
+**1c. Create the remote (if it doesn't exist) and push.** Idempotent — if the repo is already on GitHub from a prior run, it only pushes new commits.
+
+```bash
+if ! gh repo view abedubas-alchemydev/email-extractor >/dev/null 2>&1; then
+  gh repo create abedubas-alchemydev/email-extractor \
+    --private \
+    --source=. \
+    --remote=origin \
+    --push
+else
+  git remote get-url origin >/dev/null 2>&1 || \
+    git remote add origin https://github.com/abedubas-alchemydev/email-extractor.git
+  git push -u origin HEAD
+fi
+
+# Confirm GitHub matches local
+gh repo view abedubas-alchemydev/email-extractor --json defaultBranchRef,pushedAt,visibility
+git log -1 --pretty=full
+```
+
+Before moving on, confirm:
+
+- Repo is **private** (`visibility: PRIVATE` in the JSON above).
+- The last commit has **zero AI attribution** — no `Co-Authored-By: Claude`, no "Generated with…" footer, no references to AI/Claude/Anthropic/assistant/LLM. If one slipped through from CC CLI's scaffold run, stop here, rewrite the offending commit locally, and force-push (safe only because the repo is fresh and no one has cloned it).
+- `gh auth status` shows `abedubas-alchemydev` as the active account for `github.com`. If another account is active, the push will land in the wrong namespace.
+
+### 2. Reach the host and detect the OS
 
 From Arvin's local machine:
 
@@ -60,9 +118,9 @@ Record the outputs in **Outcome → Evidence**. Expect an Ubuntu or Debian relea
 
 If SSH fails with "Permission denied (publickey)", verify the local key is loaded (`ssh-add -l`) and that Arvin's local SSH config points at the right private key for this host. Do not attempt password auth.
 
-### 2. Base system update and essentials
+### 3. Base system update and essentials
 
-On the VPS, as root (Ubuntu/Debian path shown; adjust per Step 1 findings):
+On the VPS, as root (Ubuntu/Debian path shown; adjust per Step 2 findings):
 
 ```bash
 apt-get update
@@ -78,7 +136,7 @@ timedatectl set-timezone UTC
 
 Enable unattended security updates (safe on staging; major version upgrades are disabled by default).
 
-Check free memory from Step 1 — if the VPS has < 2 GB RAM, add a 2 GB swapfile:
+Check free memory from Step 2 — if the VPS has < 2 GB RAM, add a 2 GB swapfile:
 
 ```bash
 if ! swapon --show | grep -q '/swapfile'; then
@@ -90,7 +148,7 @@ if ! swapon --show | grep -q '/swapfile'; then
 fi
 ```
 
-### 3. Install Docker Engine + Compose V2
+### 4. Install Docker Engine + Compose V2
 
 Use Docker's official `apt` repository (not the distro's `docker.io` package — it lags). On Ubuntu/Debian:
 
@@ -110,7 +168,7 @@ docker compose version
 
 If `/etc/os-release` identifies Debian rather than Ubuntu, swap the URL prefix to `https://download.docker.com/linux/debian` accordingly.
 
-### 4. Create deploy user, authorize key, then harden SSH
+### 5. Create deploy user, authorize key, then harden SSH
 
 Create a non-root user for running the app and for day-to-day SSH access. Grant `docker` group membership so the deploy user can run `docker compose` without `sudo`.
 
@@ -162,7 +220,7 @@ ufw status verbose
 
 If a domain is attached later and Caddy/nginx fronts everything, the 3000/8000 rules get replaced with 80/443 and this block is revisited.
 
-### 5. Install Python 3.11 and Node 20 (host-level, optional)
+### 6. Install Python 3.11 and Node 20 (host-level, optional)
 
 Docker is the canonical runtime on this VPS, so Python and Node on the host are only for convenience (e.g., running one-off `scripts/run_*.py` locally, debugging). If you prefer container-only, skip this block.
 
@@ -182,32 +240,57 @@ node --version
 
 Record the versions in Evidence.
 
-### 6. Switch to deploy user and clone the repo
+### 7. Switch to deploy user and clone the repo
 
-From the local machine:
+The repo is **private** (`abedubas-alchemydev/email-extractor`, pushed in Step 1), so HTTPS clone without credentials will fail. Use a **read-only deploy key** scoped to this repo — do not ship a personal access token to the VPS.
 
-```bash
-ssh deploy@76.13.22.110
-```
+CC CLI orchestrates the full flow from the local machine — no manual copy-paste between terminals. The SSH key that CC CLI uses to reach `deploy@76.13.22.110` is the same Ed25519 key Arvin already uses for `root@76.13.22.110` (authorized on the `deploy` user during Step 5).
 
-Then on the VPS, as `deploy`:
+**7a. Generate the deploy keypair on the VPS and capture the public half locally.**
 
 ```bash
-mkdir -p ~/apps && cd ~/apps
-# Ask Arvin whether the repo should be cloned via HTTPS (public repo, no auth) or SSH (private repo, deploy key required).
-# If private and no deploy key on the VPS yet:
-#   ssh-keygen -t ed25519 -C "deploy@fis-staging" -f ~/.ssh/id_ed25519 -N ""
-#   cat ~/.ssh/id_ed25519.pub
-#   # → Arvin pastes this into GitHub as a deploy key for the Email Extractor repo, read-only
-# Then:
-git clone <repo-url> email-extractor
-cd email-extractor
-git log -1 --oneline     # confirm we got the scaffolded head
+# Generate only if it doesn't already exist (idempotent)
+ssh deploy@76.13.22.110 'test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -C "deploy@email-extractor-staging" -f ~/.ssh/id_ed25519 -N ""'
+
+# Pull the public key back to the local machine as a string
+DEPLOY_PUBKEY="$(ssh deploy@76.13.22.110 'cat ~/.ssh/id_ed25519.pub')"
+printf '%s\n' "$DEPLOY_PUBKEY"
 ```
 
-Replace `<repo-url>` with whatever Arvin provides at prompt execution time — if the repo is still only on the local machine, this is the moment to push it to GitHub first. If the repo is not yet on a remote, stop and have Arvin push it before continuing.
+**7b. Register the public key as a read-only deploy key on the repo.**
 
-### 7. Populate `.env` files
+Idempotent — if a key with this title already exists (e.g., from a previous run), skip.
+
+```bash
+if ! gh repo deploy-key list --repo abedubas-alchemydev/email-extractor --json title \
+     | grep -q '"vps-staging-76.13.22.110"'; then
+  printf '%s\n' "$DEPLOY_PUBKEY" | gh repo deploy-key add /dev/stdin \
+    --repo abedubas-alchemydev/email-extractor \
+    --title "vps-staging-76.13.22.110"
+fi
+
+gh repo deploy-key list --repo abedubas-alchemydev/email-extractor
+```
+
+Verify the response shows the key as `read_only: true`. A read-write deploy key is not acceptable here — staging pulls code, it never pushes.
+
+**7c. Pre-seed `known_hosts` and clone.**
+
+```bash
+ssh deploy@76.13.22.110 'ssh-keyscan github.com >> ~/.ssh/known_hosts && chmod 0600 ~/.ssh/known_hosts'
+
+ssh deploy@76.13.22.110 'mkdir -p ~/apps && cd ~/apps && \
+  if [ -d email-extractor/.git ]; then \
+    cd email-extractor && git pull --ff-only; \
+  else \
+    git clone git@github.com:abedubas-alchemydev/email-extractor.git; \
+  fi && \
+  cd email-extractor && git log -1 --oneline'
+```
+
+Confirm the printed `HEAD` SHA matches the one pushed in Step 1.
+
+### 8. Populate `.env` files
 
 Create the `.env` at repo root and `backend/.env` from their `.example` templates, then fill in real values. The API keys can be left blank for staging — the stack still boots, but the paid discovery providers will be no-ops (this is acceptable for staging smoke-testing).
 
@@ -229,7 +312,7 @@ Edit `backend/.env` — override any backend-only values. For staging, leaving `
 
 `chmod 0600 .env backend/.env` so neighboring users (none, on a single-tenant VPS, but good hygiene) can't read them.
 
-### 8. Bring up the stack
+### 9. Bring up the stack
 
 ```bash
 cd ~/apps/email-extractor
@@ -243,7 +326,7 @@ docker compose logs --tail=80 frontend
 
 All services should be `Up` or `Healthy`.
 
-### 9. Health check from the VPS and from Arvin's machine
+### 10. Health check from the VPS and from Arvin's machine
 
 On the VPS:
 
@@ -263,13 +346,13 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://76.13.22.110:3000    # expect 
 
 Record both sets of outputs in **Outcome → Evidence**.
 
-### 10. (Optional) Auto-start on reboot
+### 11. (Optional) Auto-start on reboot
 
 For staging it's reasonable to have the stack come up on reboot so a host restart doesn't silently take the environment down. The simplest approach is Docker's built-in restart policy — confirm `docker-compose.yml` already has `restart: unless-stopped` on each service (the scaffold should set this; if not, note as a follow-up). No separate systemd unit needed.
 
 If `restart:` is missing, do **not** edit the compose file from the VPS. File it as a follow-up prompt.
 
-### 11. Document the runbook (local commit — optional)
+### 12. Document the runbook (local commit — optional)
 
 From Arvin's local machine, if the provisioning revealed anything durable (e.g., specific provider-image quirks, a package the official playbook missed, a recovery procedure), capture it in a short runbook under `docs/runbooks/vps-staging.md`. Keep it operational: how to ssh in as `deploy`, where the compose file lives, how to tail logs, how to restart the stack, how to rotate the `.env`. One commit, one concern:
 
@@ -283,6 +366,8 @@ If nothing durable was learned, skip the commit — an empty runbook is worse th
 
 A fresh agent re-running this prompt against an already-provisioned host (idempotency check) or another admin verifying the outcome must be able to confirm each of:
 
+- `gh repo view abedubas-alchemydev/email-extractor --json visibility,pushedAt` returns `visibility: PRIVATE` and a `pushedAt` timestamp matching the local `HEAD`.
+- `gh repo deploy-key list --repo abedubas-alchemydev/email-extractor` shows exactly one key titled `vps-staging-76.13.22.110` with `read_only: true`.
 - `ssh deploy@76.13.22.110 'docker compose -f ~/apps/email-extractor/docker-compose.yml ps'` lists all services as `Up` or `Healthy`.
 - `curl -fsS http://76.13.22.110:8000/health` from outside the VPS returns `{"status":"ok"}` with HTTP 200.
 - `curl -fsS http://76.13.22.110:8000/api/v1/health` returns `{"status":"ok"}` with HTTP 200.
@@ -327,23 +412,26 @@ None. This prompt is provisioning-and-verification; it does not touch applicatio
 **Evidence:**
 
 ```
-# uname -a / os-release / meminfo / df / nproc
-<paste Step 1 output>
+# gh auth status + gh repo view (Step 1, confirms push landed under abedubas-alchemydev and repo is private)
+<paste Step 1 tail>
 
-# docker / compose versions
-<paste Step 3 tail>
+# uname -a / os-release / meminfo / df / nproc (Step 2)
+<paste Step 2 output>
 
-# ssh deploy@76.13.22.110 verification (whoami + groups)
-<paste Step 4 verification output>
+# docker / compose versions (Step 4)
+<paste Step 4 tail>
+
+# ssh deploy@76.13.22.110 verification — whoami + groups (Step 5)
+<paste Step 5 verification output>
 
 # ufw status verbose
 <paste>
 
-# On-host curls
-<paste Step 9 on-VPS block>
+# On-host curls (Step 10)
+<paste Step 10 on-VPS block>
 
-# Off-host curls (from Arvin's machine)
-<paste Step 9 off-VPS block>
+# Off-host curls from Arvin's machine (Step 10)
+<paste Step 10 off-VPS block>
 
 # docker compose ps
 <paste>
