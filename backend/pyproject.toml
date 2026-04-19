@@ -38,3 +38,9 @@ reportUninitializedInstanceVariable = "none"
 reportUnannotatedClassAttribute = "none"
 reportUnusedParameter = "none"
 reportDeprecated = "none"
+# SQLAlchemy declarative-base pattern: app/db/base.py imports model modules
+# at the bottom solely to register tables with Base.metadata for Alembic.
+# These imports look "unused" to a static checker and form a cycle through
+# the relationship() back-references. Both are inherent to the pattern.
+reportImportCycles = "none"
+reportUnusedImport = "none"
