@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import computed_field
+from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     hunter_api_key: str | None = None
     apollo_api_key: str | None = None
     snov_api_key: str | None = None
+
+    # Hunter domain-search result cap. Free tier: 10. Paid: up to 100.
+    # Hunter returns HTTP 400 if this exceeds the plan max — keep at 10 on free.
+    hunter_limit: int = Field(default=10, ge=1, le=100)
 
     @computed_field
     @property

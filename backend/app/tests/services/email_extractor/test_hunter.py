@@ -72,7 +72,7 @@ async def test_missing_key_skips_network(monkeypatch: pytest.MonkeyPatch) -> Non
 
     result = await Hunter().run("example.com")
     assert result.emails == []
-    assert result.errors == ["hunter_api_key not configured"]
+    assert result.errors == ["api_key not configured"]
     assert route.call_count == 0
 
 
@@ -82,7 +82,7 @@ async def test_empty_string_key_also_skips(monkeypatch: pytest.MonkeyPatch) -> N
     route = respx.get(DOMAIN_SEARCH_URL).mock(return_value=httpx.Response(200, json=_payload([])))
 
     result = await Hunter().run("example.com")
-    assert result.errors == ["hunter_api_key not configured"]
+    assert result.errors == ["api_key not configured"]
     assert route.call_count == 0
 
 
@@ -93,7 +93,7 @@ async def test_401_invalid_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = await Hunter().run("example.com")
     assert result.emails == []
-    assert result.errors == ["hunter: invalid api key"]
+    assert result.errors == ["invalid api key"]
 
 
 @respx.mock
@@ -102,7 +102,7 @@ async def test_402_out_of_credits(monkeypatch: pytest.MonkeyPatch) -> None:
     respx.get(DOMAIN_SEARCH_URL).mock(return_value=httpx.Response(402))
 
     result = await Hunter().run("example.com")
-    assert result.errors == ["hunter: out of credits"]
+    assert result.errors == ["out of credits"]
 
 
 @respx.mock
@@ -111,7 +111,7 @@ async def test_429_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
     respx.get(DOMAIN_SEARCH_URL).mock(return_value=httpx.Response(429))
 
     result = await Hunter().run("example.com")
-    assert result.errors == ["hunter: rate limited"]
+    assert result.errors == ["rate limited"]
 
 
 @respx.mock
@@ -120,7 +120,7 @@ async def test_500_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
     respx.get(DOMAIN_SEARCH_URL).mock(return_value=httpx.Response(500))
 
     result = await Hunter().run("example.com")
-    assert result.errors == ["hunter: upstream error 500"]
+    assert result.errors == ["upstream error 500"]
 
 
 @respx.mock
@@ -130,7 +130,7 @@ async def test_timeout_translates_to_structured_error(monkeypatch: pytest.Monkey
 
     result = await Hunter().run("example.com")
     assert result.emails == []
-    assert result.errors == ["hunter: timeout"]
+    assert result.errors == ["timeout"]
 
 
 @respx.mock
@@ -146,3 +146,48 @@ async def test_missing_confidence_field_yields_none(monkeypatch: pytest.MonkeyPa
     result = await Hunter().run("example.com")
     assert len(result.emails) == 1
     assert result.emails[0].confidence is None
+
+
+@respx.mock
+async def test_hunter_plan_limit_400_yields_clean_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hunter free tier returns 400 with a `pagination_error` body when limit > plan max."""
+    _set_key(monkeypatch, "test-key")
+    monkeypatch.setattr(config.settings, "hunter_limit", 10)
+    respx.get(DOMAIN_SEARCH_URL).mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "errors": [
+                    {
+                        "id": "pagination_error",
+                        "code": 400,
+                        "details": "You're limited to 10 email addresses on your current plan",
+                    }
+                ]
+            },
+        )
+    )
+
+    result = await Hunter().run("example.com")
+    assert result.emails == []
+    assert result.errors == ["free-tier plan limit exceeded (configured limit=10)"]
+
+
+@respx.mock
+async def test_hunter_uses_configured_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`settings.hunter_limit` flows through to the outgoing URL's `limit` query param."""
+    _set_key(monkeypatch, "test-key")
+    monkeypatch.setattr(config.settings, "hunter_limit", 5)
+    route = respx.get(DOMAIN_SEARCH_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json=_payload([{"value": "x@example.com", "confidence": 90, "type": "personal"}]),
+        )
+    )
+
+    result = await Hunter().run("example.com")
+    assert route.called
+    request_url = str(respx.calls[0].request.url)
+    assert "limit=5" in request_url
+    assert len(result.emails) == 1
+    assert result.emails[0].email == "x@example.com"
