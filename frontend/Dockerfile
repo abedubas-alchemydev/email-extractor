@@ -13,7 +13,11 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 ARG NEXT_PUBLIC_API_BASE_URL
-ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+# Use ${VAR-} (single dash) so an empty string from `docker compose` build args
+# passes through verbatim. The `:-` form (colon-dash) treats empty as "unset"
+# and silently substitutes the default — which would re-bake the broken
+# http://localhost:8000 we just removed. Default is empty -> same-origin /api/*.
+ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL-}
 ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN npm run build
