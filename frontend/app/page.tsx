@@ -207,16 +207,22 @@ export default function Home(): React.ReactElement {
     }
   };
 
-  return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
-      <header className="mb-8">
-        <h1 className="text-3xl font-semibold tracking-tight">Email Extractor</h1>
-        <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-          Find every email address associated with a domain.
-        </p>
-      </header>
+  // Empty state -> vertically centered like a search landing page.
+  // Once we have a scan in flight or any returned data, top-align so the form
+  // stays visible while the table grows below it.
+  const hasContent = scan !== null || error !== null || timedOut;
 
-      <form onSubmit={handleSubmit} className="flex gap-2">
+  return (
+    <main className="min-h-screen flex flex-col items-center px-4">
+      <div className={`w-full max-w-3xl ${hasContent ? "mt-24 mb-16" : "my-auto py-12"}`}>
+        <header className="mb-8 text-center">
+          <h1 className="text-3xl font-semibold tracking-tight">Email Extractor</h1>
+          <p className="mt-2 text-sm text-neutral-500 dark:text-neutral-400">
+            Find every email address associated with a domain.
+          </p>
+        </header>
+
+        <form onSubmit={handleSubmit} className="flex flex-col sm:flex-row gap-2">
         <input
           type="text"
           value={domain}
@@ -267,11 +273,12 @@ export default function Home(): React.ReactElement {
         </div>
       )}
 
-      {scan !== null && (
-        <section className="mt-8">
-          <ResultsTable rows={scan.discovered_emails} />
-        </section>
-      )}
+        {scan !== null && (
+          <section className="mt-8">
+            <ResultsTable rows={scan.discovered_emails} />
+          </section>
+        )}
+      </div>
     </main>
   );
 }
