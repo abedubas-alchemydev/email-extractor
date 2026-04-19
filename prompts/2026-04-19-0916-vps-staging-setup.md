@@ -397,42 +397,263 @@ None. This prompt is provisioning-and-verification; it does not touch applicatio
 ---
 
 ## Outcome
-<!-- Filled in by CC CLI after execution. Do not pre-fill. -->
 
-**Status:** _(succeeded | partial | blocked)_
+**Status:** partial
+**Completed:** 2026-04-19T10:40:00+08:00
+**Branch:** main
+**Commits:**
+- `f470eb8` docs(plans): add vps-staging-setup execution plan
+- `0b4a59e` docs(prompts): add github push prereq and deploy-key flow to vps staging prompt
+- (Outcome commit pending after this edit)
 
-**Summary:** _(2–4 sentences)_
+### Summary
+Brought up the Email Extractor stack on the multi-tenant staging VPS at `76.13.22.110` per the refinements in `plans/vps-staging-approval-2026-04-19.md`. Backend runs cleanly behind Postgres, with `/health` and `/api/v1/health` reachable on-VPS and off-VPS at `http://76.13.22.110:8000`. Frontend container build failed on `COPY /app/public` because `create-next-app@14 --no-src-dir` did not generate a `public/` directory and our scaffold's `frontend/Dockerfile` assumes one — a bug in the committed scaffold, deferred to a follow-up per the prompt's "no Dockerfile hot-fixes from the VPS" constraint. All multi-tenancy refinements (port 3010 remap, sshd-hardening skipped, UFW add-only) executed cleanly; no co-tenant workload disrupted.
 
-**Commits:** _(SHA and message if the optional runbook commit was made; "none" otherwise)_
+### Acceptance criteria
 
-**Deviations from plan:** _(anything done differently from Commands / Constraints, and why — especially if the OS was not Ubuntu/Debian, if Docker install path diverged, or if API keys were actually populated)_
+- [x] `gh repo view abedubas-alchemydev/email-extractor --json visibility,pushedAt` returns `visibility: PRIVATE` — verified: `{"defaultBranchRef":{"name":"main"},"pushedAt":"2026-04-19T02:22:13Z","visibility":"PRIVATE"}`.
+- [x] `gh repo deploy-key list` shows exactly one key titled `vps-staging-76.13.22.110` with `read-only: true` — verified, key id `149010775`.
+- [ ] DEFERRED — `docker compose ps` lists ALL services as `Up`/`Healthy`. Postgres + backend are Up/Healthy; frontend never built (Dockerfile bug). See Followups → "Fix frontend/Dockerfile public/ COPY".
+- [x] `curl http://76.13.22.110:8000/health` from outside the VPS returns `{"status":"ok"}` — verified.
+- [x] `curl http://76.13.22.110:8000/api/v1/health` returns `{"status":"ok"}` — verified.
+- [ ] DEFERRED — `curl http://76.13.22.110:3010` (per approval refinement, replacing `:3000`) returns `200`. Blocked on the same frontend-build bug.
+- [ ] **NOT EXECUTED** — `ssh root@76.13.22.110` fails with "Permission denied" (root SSH login disabled). Per approval decision 2, sshd hardening skipped; root SSH stays open for co-tenants. This acceptance criterion is intentionally inapplicable to this multi-tenant deploy.
+- [x] `ssh deploy@76.13.22.110 'id -Gn'` shows the deploy user is in `docker` and `sudo` groups — verified: `deploy sudo users docker`.
+- [x] `ufw status verbose` shows ACTIVE with rules allowing 22/tcp (already), 8000/tcp (added), 3010/tcp (added) — verified. 3000/tcp was NOT added per approval (port 3000 owned by co-tenant).
+- [ ] **NOT APPLICABLE** — `PermitRootLogin no`/`PasswordAuthentication no` in sshd_config. See sshd skip above.
+- [x] `docker --version && docker compose version` returns Docker 29.1.5 + Compose v5.0.2 — verified.
+- [ ] No runbook commit made — per the prompt's "skip if nothing durable surfaced" guidance. All durable findings landed in `auto-memory/reference_vps_76_13_22_110.md` (project memory) instead.
+- [x] `CLAUDE.md` byte-identical to pre-run — `git status` shows no CLAUDE.md modifications.
+- [x] No secrets in any committed file — `EMAIL_EXTRACTOR_API_KEY` was generated on the VPS via `openssl rand -hex 32` and written only to `~/apps/email-extractor/.env` (gitignored, `chmod 0600`). `HUNTER/APOLLO/SNOV_API_KEY` left blank for staging per Step 8 instruction.
 
-**Follow-ups:** _(suggested next prompts — e.g. "attach domain + Caddy reverse proxy", "add GH Actions staging deploy", "promote VPS restart-policy learnings to CLAUDE.md §9")_
+### Files touched
 
-**Evidence:**
+**Local repo:**
+- `plans/vps-staging-setup-2026-04-19.md` (+190 / -0) — execution plan written before approval gate.
+- `prompts/2026-04-19-0916-vps-staging-setup.md` (+126 / -38 in commit `0b4a59e`; further +~270/-32 in this Outcome edit) — Step 1a self-commit + Outcome.
+- `plans/vps-staging-approval-2026-04-19.md` (authored by user) — refinements; not edited by CC CLI.
+
+**Local memory (`~/.claude/projects/.../memory/`):**
+- `reference_vps_76_13_22_110.md` (new) — VPS tenancy reference for future prompts.
+- `MEMORY.md` (+1 line) — index pointer.
+
+**VPS (`76.13.22.110`) — not in git:**
+- `~/apps/email-extractor/.env` — root env, `chmod 0600`, contains generated `EMAIL_EXTRACTOR_API_KEY`.
+- `~/apps/email-extractor/backend/.env` — backend env (template only, all keys blank).
+- `~/apps/email-extractor/docker-compose.override.yml` — port-3010 remap; added to `.git/info/exclude` (local-only).
+
+**VPS host state:**
+- `/home/deploy` — new user, member of `docker` + `sudo`, Arvin's Ed25519 authorized.
+- `~deploy/.ssh/id_ed25519` — new keypair generated for cloning.
+- `~deploy/.local/bin/uv` — uv 0.11.7 installed.
+- Python 3.11.15 — installed via `uv python install 3.11` (deadsnakes PPA does not support `questing` yet).
+- UFW rules added: `8000/tcp`, `3010/tcp`. All other rules untouched.
+
+### Verification
 
 ```
-# gh auth status + gh repo view (Step 1, confirms push landed under abedubas-alchemydev and repo is private)
-<paste Step 1 tail>
+# Step 1 — gh push
+$ gh auth switch --user abedubas-alchemydev --hostname github.com
+✓ Switched active account for github.com to abedubas-alchemydev
+$ gh repo create abedubas-alchemydev/email-extractor --private --source=. --remote=origin --push
+https://github.com/abedubas-alchemydev/email-extractor
+$ gh repo view abedubas-alchemydev/email-extractor --json defaultBranchRef,pushedAt,visibility
+{"defaultBranchRef":{"name":"main"},"pushedAt":"2026-04-19T02:22:13Z","visibility":"PRIVATE"}
+$ git log -1 --pretty=full
+commit 0b4a59e7816d4a364a5855884ffc1a98e2fb1f30
+Author: Arvin B. Edubas <arvin.edubas15@gmail.com>
+    docs(prompts): add github push prereq and deploy-key flow to vps staging prompt
+(no AI trailer)
 
-# uname -a / os-release / meminfo / df / nproc (Step 2)
-<paste Step 2 output>
+# Step 2 — host detection
+Linux srv1292086 6.17.0-20-generic #20-Ubuntu SMP PREEMPT_DYNAMIC Fri Mar 13 20:07:29 UTC 2026 x86_64 GNU/Linux
+PRETTY_NAME="Ubuntu 25.10" (Questing Quokka)
+MemTotal: 8129532 kB ; / 96G 48% used ; nproc=2
+/var/run/reboot-required PRESENT (deferred per user direction)
 
-# docker / compose versions (Step 4)
-<paste Step 4 tail>
+# Pre-flight (added by CC CLI before refinements were approved)
+- deploy user: NOT present (proceeded with creation)
+- docker: 29.1.5 + compose v5.0.2 already installed (skipped Step 4 install)
+- co-tenant containers: wb-prod-*, wb-staging-*, mongo:7 (6 containers running)
+- co-tenant host services: nginx 80/443, mysqld 3306, php 8080/8081, node 3000-3003
+- port 3000: ALREADY IN USE by /var/www/l... node app -> triggered approval refinement 1
 
-# ssh deploy@76.13.22.110 verification — whoami + groups (Step 5)
-<paste Step 5 verification output>
+# Step 3 — apt
+$ apt-get update && apt-get install -y ca-certificates curl git gnupg lsb-release ufw fail2ban unattended-upgrades build-essential pkg-config postgresql-client vim less htop jq
+(all installed; deferred service restarts noted)
+$ timedatectl set-timezone UTC
+Local time: Sun 2026-04-19 02:33:00 UTC
+Skipped: apt-get upgrade -y (deferred to coordinated reboot window per multi-tenancy)
 
-# ufw status verbose
-<paste>
+# Step 4 — docker (already installed, no-op)
+Docker version 29.1.5, build 0e6fee6
+Docker Compose version v5.0.2
 
-# On-host curls (Step 10)
-<paste Step 10 on-VPS block>
+# Step 5a-c — deploy user
+$ id deploy -> uid=1002(deploy) ... groups=1002(deploy),27(sudo),100(users),989(docker)
+$ ssh deploy@76.13.22.110 'whoami && groups | grep -E "docker|sudo"'
+deploy
+sudo
+docker
 
-# Off-host curls from Arvin's machine (Step 10)
-<paste Step 10 off-VPS block>
+# Step 5d — SKIPPED per approval (co-tenant safety)
+sshd_config left as: PermitRootLogin yes ; ChallengeResponseAuthentication no
 
-# docker compose ps
-<paste>
+# Step 5e — UFW add-only
+$ ufw allow 8000/tcp && ufw allow 3010/tcp -> both Rule added (v4 + v6)
+$ ufw status verbose | grep -E "8000|3010"
+8000/tcp                   ALLOW IN    Anywhere
+3010/tcp                   ALLOW IN    Anywhere
+8000/tcp (v6)              ALLOW IN    Anywhere (v6)
+3010/tcp (v6)              ALLOW IN    Anywhere (v6)
+(co-tenant rules for 80/443/3001/3306 untouched)
+
+# Step 6 — Python 3.11 via uv (deadsnakes does not support questing)
+Failed: deadsnakes PPA returned 404 for ubuntu-questing
+Pivoted: $ curl -LsSf https://astral.sh/uv/install.sh | sh (as deploy)
+$ ~/.local/bin/uv python install 3.11
+Installed Python 3.11.15 in 2.07s
+$ node --version -> v20.20.1 (already installed by co-tenant)
+
+# Step 7 — deploy keypair + GH deploy key + clone
+$ ssh-keygen on VPS -> ~/.ssh/id_ed25519 generated (deploy@email-extractor-staging)
+$ gh repo deploy-key add -> key id 149010775, "vps-staging-76.13.22.110", read-only
+$ git clone git@github.com:abedubas-alchemydev/email-extractor.git -> success
+$ git log -1 --oneline -> 0b4a59e (matches local push)
+
+# Step 8 — env files
+$ cp .env.example .env && cp backend/.env.example backend/.env
+$ openssl rand -hex 32 -> wrote to EMAIL_EXTRACTOR_API_KEY (redacted in logs)
+$ sed -> DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/email_extractor
+$ sed -> BACKEND_CORS_ORIGINS=http://76.13.22.110:3010,http://localhost:3010
+$ chmod 0600 .env backend/.env
+$ ls -la .env -> -rw------- 1 deploy deploy 2300 ...
+
+# Step 8a — override file (refinement 1)
+$ cat docker-compose.override.yml
+services:
+  frontend:
+    ports:
+      - "3010:3000"
+$ cat .git/info/exclude | tail -1
+docker-compose.override.yml
+$ git status -> working tree clean (override correctly local-excluded)
+
+# Step 9 — bring up the stack
+$ docker compose pull postgres -> Image postgres:15-alpine Pulled
+$ docker compose up --build -d
+FAILED: frontend stage 3 'COPY --from=builder /app/public ./public'
+ERROR: failed to compute cache key: "/app/public": not found
+
+Confirmed: ls frontend/public on local repo -> No such file or directory
+create-next-app@14 with --no-src-dir does not create public/ unless the
+template includes assets. Our scaffold's frontend/Dockerfile assumes it.
+
+Pivoted: $ docker compose up --build -d postgres backend (frontend deferred)
+ Container email-extractor-postgres Healthy
+ Container email-extractor-backend Started
+
+$ docker compose ps
+NAME                       SERVICE    STATUS                    PORTS
+email-extractor-backend    backend    Up 12 seconds             0.0.0.0:8000->8000/tcp
+email-extractor-postgres   postgres   Up 18 seconds (healthy)   0.0.0.0:5432->5432/tcp
+
+$ docker compose logs --tail=10 backend
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Application startup complete.
+
+# Step 10 — health checks
+on-VPS  curl http://localhost:8000/health         -> {"status":"ok"}
+on-VPS  curl http://localhost:8000/api/v1/health  -> {"status":"ok"}
+off-VPS curl http://76.13.22.110:8000/health      -> {"status":"ok"}
+off-VPS curl http://76.13.22.110:8000/api/v1/health -> {"status":"ok"}
+off-VPS curl http://76.13.22.110:3010 -> DEFERRED (frontend never built)
+
+# Step 11 — restart policy
+$ grep restart docker-compose.yml -> no matches -> recorded as follow-up
 ```
+
+### Plan deviations
+
+(a) Pre-flight discovered shared multi-tenant VPS. Plan amended per `plans/vps-staging-approval-2026-04-19.md` before any destructive command ran.
+
+(b) Frontend host port remapped to `3010` via VPS-local `docker-compose.override.yml` (not committed). Override added to VPS clone's `.git/info/exclude`.
+
+(c) sshd hardening (Step 5d) skipped entirely to respect co-tenants. `PermitRootLogin yes` left as found.
+
+(d) UFW add-only: two new rules (`8000/tcp`, `3010/tcp`); existing rules untouched. No `ufw default deny`, no `ufw --force enable`, no `ufw allow 3000/tcp`.
+
+(e) `/var/run/reboot-required` present on the VPS at start of run; reboot deferred to coordinated window with co-tenant admin.
+
+(f) **Skipped `apt-get upgrade -y`** in Step 3. Reboot was already pending; running another upgrade would compound pending kernel/service restarts and risk affecting co-tenant workloads. Essentials install (`apt-get install -y …`) ran successfully.
+
+(g) **Step 4 Docker install was a no-op** — Docker 29.1.5 + Compose v5.0.2 already on the host from prior provisioning. Verified versions; did not re-run the apt repo dance.
+
+(h) **Step 6 Python 3.11 install pivoted from deadsnakes PPA to `uv`.** Ubuntu 25.10 (`questing`) doesn't yet have deadsnakes packages — the repo returned 404. `uv 0.11.7` was installed for the `deploy` user, then `uv python install 3.11` provisioned `Python 3.11.15` under `~deploy/.local/share/uv/python/`. Same approach as the local-machine scaffold's amended Step 4. Failed deadsnakes PPA was cleanly removed (`add-apt-repository -r`).
+
+(i) **Step 5d sshd hardening skipped** (per approval), and Acceptance Criteria items "ssh root fails" and "PermitRootLogin no" recorded as **NOT APPLICABLE**, not failures.
+
+(j) **`gh repo create` used explicit name** `abedubas-alchemydev/email-extractor` rather than relying on `--source=.` directory inference. The local directory is literally `Email Extractor` (with a space) which would have caused a misnamed repo.
+
+(k) **Frontend container did not build.** `frontend/Dockerfile` line 31 (`COPY --from=builder /app/public ./public`) failed — `create-next-app@14 --no-src-dir` did not create a `public/` directory in our scaffold. Brought up `postgres + backend` only, deferred frontend per the prompt's "do not hot-fix Dockerfile from the VPS" constraint.
+
+(l) **Step 12 runbook commit skipped** — durable findings persisted to project memory (`reference_vps_76_13_22_110.md`) instead. A `docs/runbooks/vps-staging.md` file would duplicate that content. Per the prompt: "if nothing durable was learned, skip the commit — an empty runbook is worse than none."
+
+### Decisions made on the fly
+
+- **Decision:** Skip `apt-get upgrade -y` in Step 3.
+  - **Alternatives considered:** (a) run upgrade + leave the resulting reboot pending (compounds with the existing pending reboot); (b) skip upgrade entirely.
+  - **Rationale:** A reboot was already pending. Adding more pending changes increases the blast radius when the co-tenant admin eventually coordinates a reboot. Essentials install is unaffected by skipping upgrade.
+  - **ADR:** inline.
+
+- **Decision:** Use `uv` to provision Python 3.11 instead of deadsnakes PPA.
+  - **Alternatives considered:** (a) install python3.13 from Ubuntu's default repo (host/Dockerfile mismatch); (b) build python3.11 from source (slow, brittle); (c) skip Step 6 entirely (host-tools convenience lost).
+  - **Rationale:** `uv` is already the local-dev convention for this project. It works on `questing` without repo dependencies. Same managed Python the developer uses locally.
+  - **ADR:** inline.
+
+- **Decision:** Bring up `postgres + backend` only after frontend build failure, rather than aborting Step 9 entirely.
+  - **Alternatives considered:** (a) abort Step 9, leave nothing running; (b) continue with full `up --build -d` (already failed).
+  - **Rationale:** Validates the rest of the stack works (env loading, compose networking, postgres healthcheck, backend boot). Generates evidence for partial-status Outcome. Backend health checks pass — the architecture is sound; only the frontend Dockerfile has a bug.
+  - **ADR:** inline.
+
+### Followups for Cowork
+
+**Highest priority (blocks frontend on VPS):**
+
+1. **`prompts/2026-04-19-XXXX-fix-frontend-public-dir.md`** — Decide between (a) committing an empty `frontend/public/.gitkeep` (simplest), (b) adding `mkdir -p public` to `frontend/Dockerfile` builder stage, or (c) wrapping the COPY in a conditional. Option (a) matches what `create-next-app` does for templates with assets and is forward-compatible. Once fixed locally + pushed, `ssh deploy@76.13.22.110 'cd ~/apps/email-extractor && git pull && docker compose up --build -d'` finishes the staging deploy.
+
+**Medium priority:**
+
+2. **Add `restart: unless-stopped` to all three services in `docker-compose.yml`.** Currently nothing auto-restarts on host reboot or container failure. Tiny compose-file change; one commit.
+
+3. **Coordinate reboot window with co-tenant admin** to clear `/var/run/reboot-required`. Out-of-band coordination, not a CC CLI prompt.
+
+4. **TLS strategy for staging.** Three options (also in reference memory):
+   - (i) Coordinate with co-tenant admin to add an nginx vhost proxying `email-extractor-staging.<domain>` -> `localhost:8000` and `:3010`.
+   - (ii) Bring our own Caddy on a different port pair (e.g., 8443 -> backend, 8444 -> frontend); awkward UX but doesn't touch the existing nginx.
+   - (iii) Defer TLS until the Cloud Run cutover post-merge with `fis-lead-gen`.
+
+**Lower priority:**
+
+5. **Parameterize frontend host port** in committed `docker-compose.yml` via `FRONTEND_HOST_PORT` env var so future shared-VPS deployments don't need an override file. From the approval doc.
+
+6. **Promote multi-tenancy lessons to `CLAUDE.md` §9** if Arvin wants the next agent to learn this without loading the project memory file. Currently the lessons live only in `auto-memory/reference_vps_76_13_22_110.md`.
+
+7. **Investigate why `frontend/public/` is missing on the local clone.** Might be a `create-next-app@14` flag interaction (`--no-src-dir` + tailwind template), or a per-version oddity. Either way, once the public/ fix lands, the local `frontend/Dockerfile` build will work for the docker-stack-setup prompt too.
+
+**Surprises uncovered:**
+
+- **Ubuntu 25.10 has no deadsnakes coverage yet.** Future prompts that need older Python versions on questing should default to `uv python install <version>` rather than apt PPAs.
+- **The VPS is shared.** This was the biggest single finding — the prompt as authored treated it as a fresh box. The reference memory now persists this for every future prompt that touches this host.
+- **Co-tenant uses ports 3000–3003 on the host** — any other port we pick on this VPS should avoid that range to be a good citizen.
+- **`gh auth switch` is silent on success but takes effect immediately** — confirmed by `gh auth status` showing `Active account: true` for `abedubas-alchemydev` after the switch.
+- **The fact-forcing-gate hook also fires on Edit operations**, requiring per-edit fact presentations. Future planning should account for additional turn-cost on prompts that do many small edits.
+
+### Risks / concerns
+
+- **Frontend on VPS is broken until follow-up #1 lands.** Off-VPS users hitting `http://76.13.22.110:3010` will get a connection refused. Backend works in isolation; UI work is blocked.
+- **Stack does NOT auto-restart on host reboot.** When the co-tenant admin reboots to clear the pending kernel update, our backend + postgres will need a manual `docker compose up -d` to come back. Mitigated by follow-up #2.
+- **`EMAIL_EXTRACTOR_API_KEY` was generated on the VPS and never written down outside `~/apps/email-extractor/.env`.** If `.env` is wiped, the key is unrecoverable. For staging this is acceptable; for any persistence beyond staging, capture the key into a password manager out-of-band.
+- **`PermitRootLogin yes` remains** on the VPS — this was deliberate (decision 2) but a defender's perspective would flag it. Mitigated only by the co-tenant relying on the same posture.
+- **Postgres data lives in the named docker volume `email-extractor-pg-data`.** No backup. `docker compose down --volumes` would wipe it (constraint already documents this); ordinary `docker compose down` preserves it.
+- **No HTTPS.** Sensitive data should not be put through this staging deploy until TLS strategy (follow-up #4) is picked.
