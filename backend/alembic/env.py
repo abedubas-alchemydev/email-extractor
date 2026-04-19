@@ -10,12 +10,10 @@ from app.db.base import Base
 
 config = context.config
 
-# DATABASE_URL is the async URL used by the app (postgresql+asyncpg://...).
-# Alembic runs sync migrations, so strip the +asyncpg driver suffix here.
-sync_url = settings.database_url
-if "+asyncpg" in sync_url:
-    sync_url = sync_url.replace("+asyncpg", "")
-config.set_main_option("sqlalchemy.url", sync_url)
+# We standardize on psycopg[binary] (v3), which supports both sync and async
+# from the same postgresql+psycopg:// URL. Alembic uses the sync engine here;
+# the app uses the async engine in app/db/session.py — same DSN, no rewriting.
+config.set_main_option("sqlalchemy.url", settings.database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

@@ -22,7 +22,7 @@ services:
       dockerfile: Dockerfile
     container_name: email-extractor-backend
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-email_extractor}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-email_extractor}
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       EMAIL_EXTRACTOR_API_KEY: ${EMAIL_EXTRACTOR_API_KEY:-}
       HUNTER_API_KEY: ${HUNTER_API_KEY:-}

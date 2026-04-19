@@ -13,7 +13,7 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.db.session import engine
 
-# Windows requires the selector loop policy for psycopg/asyncpg under uvicorn.
+# Windows requires the selector loop policy for psycopg under uvicorn.
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 

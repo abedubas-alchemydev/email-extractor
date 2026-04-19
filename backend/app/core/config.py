@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Email Extractor API"
     api_v1_prefix: str = "/api/v1"
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/email_extractor"
+    database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/email_extractor"
     backend_cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     # Standalone Bearer auth — replaced by BetterAuth on merge into fis-lead-gen.
