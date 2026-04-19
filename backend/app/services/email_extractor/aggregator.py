@@ -30,6 +30,7 @@ from app.models.discovered_email import DiscoveredEmail
 from app.models.email_verification import EmailVerification, SmtpStatus
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.services.email_extractor.base import DiscoveredEmailDraft, EmailSource
+from app.services.email_extractor.hunter import Hunter
 from app.services.email_extractor.site_crawler import SiteCrawler
 from app.services.email_extractor.verification import check_syntax_and_mx
 
@@ -39,7 +40,7 @@ _ERROR_MESSAGE_CHAR_CAP = 4000
 
 
 def _default_providers() -> list[EmailSource]:
-    return [SiteCrawler()]
+    return [SiteCrawler(), Hunter()]
 
 
 async def run(run_id: int, providers: list[EmailSource] | None = None) -> None:

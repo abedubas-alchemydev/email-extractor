@@ -21,7 +21,7 @@ class DiscoveredEmailDraft:
 
     email: str
     source: str
-    confidence: float
+    confidence: float | None = None
     attribution: str | None = None
 
 
