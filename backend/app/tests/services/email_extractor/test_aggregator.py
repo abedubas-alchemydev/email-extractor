@@ -127,3 +127,47 @@ async def test_all_providers_raise_marks_run_failed(monkeypatch: pytest.MonkeyPa
         assert scan.status == RunStatus.failed.value
         assert scan.error_message is not None
         assert "p1" in scan.error_message and "p2" in scan.error_message
+
+
+async def test_provider_error_gets_single_provider_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR 0002: provider emits bare error; aggregator wraps with exactly one '<name>: ' prefix."""
+    _stub_verification(monkeypatch)
+    run_id = await _new_scan()
+
+    provider: EmailSource = _FakeProvider(
+        "fake",
+        DiscoveryResult(emails=[], errors=["boom"]),
+    )
+
+    await aggregator.run(run_id, providers=[provider])
+
+    async with SessionLocal() as session:
+        scan = await session.get(ExtractionRun, run_id)
+        assert scan is not None
+        assert scan.error_message is not None
+        assert "fake: boom" in scan.error_message
+        assert "fake: fake:" not in scan.error_message
+
+
+async def test_multiple_providers_get_independent_prefixes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each provider's errors are prefixed with its own name, exactly once."""
+    _stub_verification(monkeypatch)
+    run_id = await _new_scan()
+
+    providers: list[EmailSource] = [
+        _FakeProvider("alpha", DiscoveryResult(emails=[], errors=["one"])),
+        _FakeProvider("beta", DiscoveryResult(emails=[], errors=["two"])),
+    ]
+
+    await aggregator.run(run_id, providers=providers)
+
+    async with SessionLocal() as session:
+        scan = await session.get(ExtractionRun, run_id)
+        assert scan is not None
+        assert scan.error_message is not None
+        assert "alpha: one" in scan.error_message
+        assert "beta: two" in scan.error_message
+        assert "alpha: alpha:" not in scan.error_message
+        assert "beta: beta:" not in scan.error_message
+        assert "alpha: beta:" not in scan.error_message
+        assert "beta: alpha:" not in scan.error_message
