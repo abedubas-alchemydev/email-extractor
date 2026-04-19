@@ -13,6 +13,22 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    env:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/email_extractor
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: email_extractor
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -34,8 +50,14 @@ jobs:
       - name: basedpyright
         run: basedpyright
 
-      - name: pytest
+      - name: pytest (unit)
         run: pytest app/tests/ -v
+
+      - name: Alembic upgrade head
+        run: alembic upgrade head
+
+      - name: pytest (integration)
+        run: pytest --override-ini="addopts=" -m integration app/tests/ -v
 
   frontend:
     name: frontend (next lint + next build)
