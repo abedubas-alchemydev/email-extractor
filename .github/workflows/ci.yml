@@ -62,3 +62,22 @@ jobs:
         env:
           NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
         run: npm run build
+
+  compose-lint:
+    name: compose-lint (5432 loopback-only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert postgres port 5432 is loopback-bound
+        run: |
+          set -e
+          BAD=$(grep -E '5432:5432' docker-compose.yml | grep -vE '127\.0\.0\.1:5432:5432' || true)
+          if [ -n "$BAD" ]; then
+            echo "ERROR: docker-compose.yml has a non-loopback 5432 binding:"
+            echo "$BAD"
+            echo "Required form: \"127.0.0.1:5432:5432\""
+            echo "See: prompts/2026-04-19-2045-harden-postgres-port-binding.md"
+            exit 1
+          fi
+          echo "ok: 5432 binding is loopback-only"
