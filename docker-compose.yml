@@ -7,7 +7,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-email_extractor}
     ports:
-      - "5432:5432"
+      # Loopback bind: postgres is reachable from the docker bridge (backend → postgres:5432)
+      # but NOT from the public internet. The VPS is shared/multi-tenant — never expose 5432.
+      - "127.0.0.1:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
