@@ -1,0 +1,40 @@
+# Ruff + basedpyright configuration only. Package management lives in
+# requirements.txt / requirements-dev.txt — pip is canonical (see CLAUDE.md §2).
+# This file intentionally has no [build-system] table.
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+# B008: FastAPI's Depends(...)/Header(...) defaults are idiomatic, not bugs.
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/tests/**/*.py" = ["B011", "B017"]
+
+[tool.basedpyright]
+pythonVersion = "3.11"
+include = ["app"]
+# Suppress noisy categories that pydantic v2, SQLAlchemy 2.0 async, and
+# FastAPI's decorator-based DI generate from inferred-Unknown types. Keep
+# the load-bearing checks (missing imports, attribute access on None, etc.)
+# active. Match fis-lead-gen's effective posture.
+reportMissingImports = "error"
+reportMissingTypeStubs = "none"
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownParameterType = "none"
+reportUnknownLambdaType = "none"
+reportAny = "none"
+reportExplicitAny = "none"
+reportImplicitOverride = "none"
+reportCallInDefaultInitializer = "none"
+reportUnusedCallResult = "none"
+reportMissingSuperCall = "none"
+reportUninitializedInstanceVariable = "none"
+reportUnannotatedClassAttribute = "none"
+reportUnusedParameter = "none"
+reportDeprecated = "none"
