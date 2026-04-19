@@ -40,10 +40,14 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+        # Empty -> the frontend uses same-origin /api/* paths. In Docker dev,
+        # Next.js rewrites those to BACKEND_INTERNAL_URL below. On the VPS,
+        # nginx terminates /api/* before it reaches the Next.js server.
+        NEXT_PUBLIC_API_BASE_URL: ""
     container_name: email-extractor-frontend
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      NEXT_PUBLIC_API_BASE_URL: ""
+      BACKEND_INTERNAL_URL: http://backend:8000
     ports:
       - "${FRONTEND_HOST_PORT:-3000}:3000"
     depends_on:

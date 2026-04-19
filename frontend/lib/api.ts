@@ -1,14 +1,21 @@
 /**
  * Thin wrapper around `fetch` for talking to the backend.
  *
- * Standalone phase: hits the backend directly via NEXT_PUBLIC_API_BASE_URL.
- * After merge into fis-lead-gen: swap base URL to "" and route through the
- * parent's BFF proxy at app/api/backend/[...path]/route.ts. The
- * `credentials: "include"` is forward-compatible with BetterAuth's session
- * cookie, so no caller-site change is needed at merge time.
+ * Default is **same-origin**: an empty base URL means `${baseUrl}${path}`
+ * resolves to a relative path (e.g. `/api/v1/...`), which the browser then
+ * sends to whichever host served the page. In production on the VPS, nginx
+ * proxies `/api/*` to the backend on port 8000 directly. In Docker dev,
+ * `frontend/next.config.mjs` rewrites `/api/*` -> `http://backend:8000/api/*`
+ * inside the compose network. Either way, the browser sees a single origin
+ * and there's no CORS to negotiate.
+ *
+ * `NEXT_PUBLIC_API_BASE_URL` remains an escape hatch for environments where
+ * the frontend genuinely needs to point at a different host (kept for the
+ * eventual fis-lead-gen BFF proxy migration). The `credentials: "include"`
+ * stays so BetterAuth's session cookie is forwarded post-merge.
  */
 
-const DEFAULT_BASE_URL = "http://localhost:8000";
+const DEFAULT_BASE_URL = "";
 
 const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_BASE_URL;
 
