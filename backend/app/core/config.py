@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     theharvester_sources: str = "crtsh,rapiddns,otx,duckduckgo"
     theharvester_timeout_seconds: int = Field(default=90, ge=10, le=300)
 
+    # Snov.io provider — OAuth2 client_credentials. Both id + secret required;
+    # missing either short-circuits to a "credentials not configured" bare error
+    # without making any HTTP call. snov_limit bounds: 1..1000, default 100
+    # (Snov free tier typically allows up to 100 emails per call).
+    snov_client_id: str | None = None
+    snov_client_secret: str | None = None
+    snov_limit: int = Field(default=100, ge=1, le=1000)
+
     @computed_field
     @property
     def cors_origins(self) -> list[str]:
