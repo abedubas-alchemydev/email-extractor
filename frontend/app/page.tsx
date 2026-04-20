@@ -46,12 +46,34 @@ interface ScanResponse {
   discovered_emails: DiscoveredEmailResponse[];
 }
 
+interface VerifyResultItem {
+  email_id: number;
+  email: string | null;
+  smtp_status: string;
+  smtp_message: string | null;
+  checked_at: string;
+}
+
+interface VerifyResponse {
+  results: VerifyResultItem[];
+}
+
 // --- Constants -------------------------------------------------------------
 
 const POLL_INTERVAL_MS = 1500;
 const POLL_TIMEOUT_MS = 180_000;
 
 const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set<RunStatus>(["completed", "failed"]);
+
+const STATUS_STYLES: Record<
+  string,
+  { className: string; Icon: typeof CheckCircle2; label: string }
+> = {
+  deliverable: { className: "text-green-600 bg-green-50", Icon: CheckCircle2, label: "Deliverable" },
+  undeliverable: { className: "text-red-600 bg-red-50", Icon: XCircle, label: "Undeliverable" },
+  inconclusive: { className: "text-amber-600 bg-amber-50", Icon: AlertCircle, label: "Inconclusive" },
+  blocked: { className: "text-gray-600 bg-gray-100", Icon: AlertCircle, label: "Blocked" },
+};
 
 // --- Helpers ---------------------------------------------------------------
 
@@ -68,45 +90,124 @@ function formatConfidence(c: number | null): string {
   return `×${c.toFixed(2)}`;
 }
 
+function latestVerification(
+  fromPoll: EmailVerificationResponse[],
+  fromLocal: EmailVerificationResponse | undefined,
+): EmailVerificationResponse | undefined {
+  const candidates: EmailVerificationResponse[] = [...fromPoll];
+  if (fromLocal) candidates.push(fromLocal);
+  if (candidates.length === 0) return undefined;
+  return candidates.reduce((latest, current) =>
+    new Date(current.checked_at) > new Date(latest.checked_at) ? current : latest,
+  );
+}
+
 // --- Sub-components --------------------------------------------------------
 
-function VerificationCell({ row }: { row: DiscoveredEmailResponse }): React.ReactElement {
-  const v = row.verifications[0];
-  if (v && v.smtp_status !== "not_checked") {
-    const ok = v.smtp_status === "deliverable";
-    const Icon = ok ? CheckCircle2 : XCircle;
-    return (
-      <span className="inline-flex items-center gap-1 text-xs">
-        <Icon className={ok ? "h-4 w-4 text-emerald-600" : "h-4 w-4 text-rose-600"} />
-        {v.smtp_status}
-      </span>
-    );
-  }
-  const syntaxOk = v?.syntax_valid === true;
-  const mxOk = v?.mx_record_present === true;
+function StatusPill({ status }: { status: string }): React.ReactElement | null {
+  const cfg = STATUS_STYLES[status];
+  if (!cfg) return null;
+  const { className, Icon, label } = cfg;
   return (
-    <span className="inline-flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
-      <span className="inline-flex items-center gap-1">
-        {syntaxOk ? (
-          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-        ) : (
-          <XCircle className="h-3.5 w-3.5 text-neutral-400" />
-        )}
-        syntax
-      </span>
-      <span className="inline-flex items-center gap-1">
-        {mxOk ? (
-          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-        ) : (
-          <XCircle className="h-3.5 w-3.5 text-neutral-400" />
-        )}
-        MX
-      </span>
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${className}`}
+      aria-label={`Email ${status}`}
+    >
+      <Icon className="h-3.5 w-3.5" />
+      {label}
     </span>
   );
 }
 
-function ResultsTable({ rows }: { rows: DiscoveredEmailResponse[] }): React.ReactElement {
+function VerifyButton({
+  emailId,
+  inFlight,
+  onClick,
+  error,
+}: {
+  emailId: number;
+  inFlight: boolean;
+  onClick: (emailId: number) => void;
+  error: string | undefined;
+}): React.ReactElement {
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <button
+        type="button"
+        onClick={() => onClick(emailId)}
+        disabled={inFlight}
+        aria-label="Verify email deliverability"
+        className="inline-flex items-center gap-1 rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2 py-0.5 text-xs font-medium hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {inFlight ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+        {inFlight ? "Verifying…" : "Verify"}
+      </button>
+      {error ? <span className="text-xs text-red-600">{error}</span> : null}
+    </div>
+  );
+}
+
+function VerificationCell({
+  row,
+  localVerification,
+  inFlight,
+  verifyError,
+  onVerify,
+}: {
+  row: DiscoveredEmailResponse;
+  localVerification: EmailVerificationResponse | undefined;
+  inFlight: boolean;
+  verifyError: string | undefined;
+  onVerify: (emailId: number) => void;
+}): React.ReactElement {
+  const latest = latestVerification(row.verifications, localVerification);
+
+  // Definitive SMTP verdict — render the pill.
+  if (latest && latest.smtp_status !== "not_checked") {
+    return <StatusPill status={latest.smtp_status} />;
+  }
+
+  // No SMTP verdict yet — show inline syntax/MX summary + Verify button.
+  const syntaxOk = latest?.syntax_valid === true;
+  const mxOk = latest?.mx_record_present === true;
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <span className="inline-flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
+        <span className="inline-flex items-center gap-1">
+          {syntaxOk ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+          ) : (
+            <XCircle className="h-3.5 w-3.5 text-neutral-400" />
+          )}
+          syntax
+        </span>
+        <span className="inline-flex items-center gap-1">
+          {mxOk ? (
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+          ) : (
+            <XCircle className="h-3.5 w-3.5 text-neutral-400" />
+          )}
+          MX
+        </span>
+      </span>
+      <VerifyButton emailId={row.id} inFlight={inFlight} onClick={onVerify} error={verifyError} />
+    </div>
+  );
+}
+
+function ResultsTable({
+  rows,
+  localVerifications,
+  inFlightIds,
+  verifyErrors,
+  onVerify,
+}: {
+  rows: DiscoveredEmailResponse[];
+  localVerifications: Record<number, EmailVerificationResponse>;
+  inFlightIds: Set<number>;
+  verifyErrors: Record<number, string>;
+  onVerify: (emailId: number) => void;
+}): React.ReactElement {
   if (rows.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-neutral-300 dark:border-neutral-700 px-6 py-10 text-center text-sm text-neutral-500 dark:text-neutral-400">
@@ -136,7 +237,13 @@ function ResultsTable({ rows }: { rows: DiscoveredEmailResponse[] }): React.Reac
               <td className="px-4 py-2 text-xs text-neutral-600 dark:text-neutral-400">{row.source}</td>
               <td className="px-4 py-2 text-xs tabular-nums">{formatConfidence(row.confidence)}</td>
               <td className="px-4 py-2">
-                <VerificationCell row={row} />
+                <VerificationCell
+                  row={row}
+                  localVerification={localVerifications[row.id]}
+                  inFlight={inFlightIds.has(row.id)}
+                  verifyError={verifyErrors[row.id]}
+                  onVerify={onVerify}
+                />
               </td>
             </tr>
           ))}
@@ -153,6 +260,9 @@ export default function Home(): React.ReactElement {
   const [scan, setScan] = useState<ScanResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [timedOut, setTimedOut] = useState(false);
+  const [localVerifications, setLocalVerifications] = useState<Record<number, EmailVerificationResponse>>({});
+  const [inFlightIds, setInFlightIds] = useState<Set<number>>(new Set());
+  const [verifyErrors, setVerifyErrors] = useState<Record<number, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startedAtRef = useRef<number>(0);
 
@@ -167,6 +277,50 @@ export default function Home(): React.ReactElement {
 
   const isInFlight = scan !== null && !TERMINAL_STATUSES.has(scan.status) && !timedOut;
 
+  const handleVerify = useCallback(async (emailId: number) => {
+    setInFlightIds((prev) => {
+      const next = new Set(prev);
+      next.add(emailId);
+      return next;
+    });
+    setVerifyErrors((prev) => {
+      if (!(emailId in prev)) return prev;
+      const next = { ...prev };
+      delete next[emailId];
+      return next;
+    });
+
+    try {
+      const response = await api<VerifyResponse>("/api/v1/email-extractor/verify", {
+        method: "POST",
+        body: JSON.stringify({ email_ids: [emailId] }),
+      });
+      const result = response.results[0];
+      if (result) {
+        const verification: EmailVerificationResponse = {
+          id: -1, // synthetic — not used for display, the cell keys off smtp_status
+          syntax_valid: null,
+          mx_record_present: null,
+          smtp_status: result.smtp_status,
+          smtp_message: result.smtp_message,
+          checked_at: result.checked_at,
+        };
+        setLocalVerifications((prev) => ({ ...prev, [emailId]: verification }));
+      }
+    } catch (err) {
+      setVerifyErrors((prev) => ({
+        ...prev,
+        [emailId]: err instanceof ApiError ? err.message : "verification failed",
+      }));
+    } finally {
+      setInFlightIds((prev) => {
+        const next = new Set(prev);
+        next.delete(emailId);
+        return next;
+      });
+    }
+  }, []);
+
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const cleaned = normalizeDomain(domain);
@@ -176,6 +330,10 @@ export default function Home(): React.ReactElement {
     setError(null);
     setTimedOut(false);
     setScan(null);
+    // Reset per-row verify state for the new scan.
+    setLocalVerifications({});
+    setInFlightIds(new Set());
+    setVerifyErrors({});
 
     try {
       const created = await api<ScanResponse>("/api/v1/email-extractor/scans", {
@@ -275,7 +433,13 @@ export default function Home(): React.ReactElement {
 
         {scan !== null && (
           <section className="mt-8">
-            <ResultsTable rows={scan.discovered_emails} />
+            <ResultsTable
+              rows={scan.discovered_emails}
+              localVerifications={localVerifications}
+              inFlightIds={inFlightIds}
+              verifyErrors={verifyErrors}
+              onVerify={handleVerify}
+            />
           </section>
         )}
       </div>

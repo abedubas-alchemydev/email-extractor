@@ -94,22 +94,19 @@ async def verify_emails(
             checked_at=verification.checked_at,
         )
 
-    results: list[VerifyResultItem] = []
-    for email_id in payload.email_ids:
+    async def _resolve(email_id: int) -> VerifyResultItem:
         discovered = by_id.get(email_id)
         if discovered is None:
             # Unknown ID — surface a synthetic item rather than 404'ing the whole batch.
-            results.append(
-                VerifyResultItem(
-                    email_id=email_id,
-                    email=None,
-                    smtp_status=SmtpStatus.not_checked.value,
-                    smtp_message="email_id not found",
-                    checked_at=datetime.now(UTC),
-                )
+            return VerifyResultItem(
+                email_id=email_id,
+                email=None,
+                smtp_status=SmtpStatus.not_checked.value,
+                smtp_message="email_id not found",
+                checked_at=datetime.now(UTC),
             )
-            continue
-        results.append(await _verify_one(discovered))
+        return await _verify_one(discovered)
 
+    results = await asyncio.gather(*(_resolve(eid) for eid in payload.email_ids))
     await db.commit()
-    return VerifyResponse(results=results)
+    return VerifyResponse(results=list(results))

@@ -9,6 +9,8 @@ to real MTAs.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Awaitable, Callable
 
 import httpx
@@ -16,6 +18,7 @@ import pytest
 from sqlalchemy import select
 
 from app.api.v1.endpoints import email_extractor as endpoint_module
+from app.core import config
 from app.db.session import SessionLocal
 from app.main import app
 from app.models.discovered_email import DiscoveredEmail
@@ -192,3 +195,48 @@ async def test_verify_batch_size_over_cap_413() -> None:
     body = response.json()
     assert "26" in body["detail"]
     assert "25" in body["detail"]
+
+
+# --- Concurrency walltime tests --------------------------------------------
+
+
+async def test_verify_concurrency_parallelism_walltime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrency=5 with 5 IDs at 0.5s/probe → walltime <1.5s (proves parallelism;
+    serial would be ~2.5s)."""
+    email_ids = await _seed_emails(5)
+    monkeypatch.setattr(config.settings, "smtp_verify_concurrency", 5)
+
+    async def fake_slow(_email: str) -> tuple[SmtpStatus, str | None]:
+        await asyncio.sleep(0.5)
+        return SmtpStatus.deliverable, None
+
+    _patch_check_smtp(monkeypatch, fake_slow)
+
+    start = time.perf_counter()
+    response = await _post_verify({"email_ids": email_ids})
+    elapsed = time.perf_counter() - start
+
+    assert response.status_code == 200
+    assert len(response.json()["results"]) == 5
+    assert elapsed < 1.5, f"expected <1.5s for 5 parallel probes at 0.5s each, got {elapsed:.2f}s"
+
+
+async def test_verify_concurrency_one_still_serializes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Concurrency=1 with 3 IDs at 0.5s/probe → walltime ≥1.4s (proves serialization
+    holds at the conservative default)."""
+    email_ids = await _seed_emails(3)
+    monkeypatch.setattr(config.settings, "smtp_verify_concurrency", 1)
+
+    async def fake_slow(_email: str) -> tuple[SmtpStatus, str | None]:
+        await asyncio.sleep(0.5)
+        return SmtpStatus.deliverable, None
+
+    _patch_check_smtp(monkeypatch, fake_slow)
+
+    start = time.perf_counter()
+    response = await _post_verify({"email_ids": email_ids})
+    elapsed = time.perf_counter() - start
+
+    assert response.status_code == 200
+    assert len(response.json()["results"]) == 3
+    assert elapsed >= 1.4, f"expected ≥1.4s for 3 serial probes at 0.5s each, got {elapsed:.2f}s"
