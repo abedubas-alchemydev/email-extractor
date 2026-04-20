@@ -9,3 +9,13 @@ python-dotenv==1.0.1
 SQLAlchemy==2.0.45
 uvicorn[standard]>=0.32.1
 selectolax>=0.3.21
+# theHarvester OSINT CLI is intentionally NOT pinned here — laramies/theHarvester
+# is not on PyPI under that name (the PyPI `theHarvester==0.0.1` is a placeholder
+# squatter) and every recent upstream tag fails to install in this project's pin
+# set (4.8+/4.9+/4.10+ require Python 3.12; this project pins to 3.11 per
+# CLAUDE.md §2/§8; 4.7.x and earlier conflict with our fastapi/SQLAlchemy pins).
+# The `TheHarvester` provider in app/services/email_extractor/theharvester.py
+# gracefully reports "binary not installed" when the CLI isn't on PATH, so the
+# rest of the discovery pipeline (Hunter, site_crawler) keeps working. Install
+# the binary out-of-band via `apt install theharvester` or `pipx install ...`
+# in the Dockerfile / VPS setup — tracked as a follow-up prompt.
