@@ -30,8 +30,6 @@ class Settings(BaseSettings):
 
     # Discovery provider API keys — optional during scaffold phase.
     hunter_api_key: str | None = None
-    apollo_api_key: str | None = None
-    snov_api_key: str | None = None
 
     # Hunter domain-search result cap. Free tier: 10. Paid: up to 100.
     # Hunter returns HTTP 400 if this exceeds the plan max — keep at 10 on free.

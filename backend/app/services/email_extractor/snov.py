@@ -15,8 +15,9 @@ exactly once. Intra-string prefixes ``"oauth:"`` and ``"search:"`` distinguish
 which step failed but never the provider name itself.
 
 Drafts have ``source="snov"``, ``confidence`` derived from Snov's
-``probability`` field (0..100 → 0.0..1.0), and ``attribution`` of the form
-``"snov: <position> | <type> | src=<first_source_url>"`` capped at 500 chars.
+``probability`` field (0..100 → 0.0..1.0; absent on free tier → ``None``), and
+``attribution`` of the form ``"snov: <status> | <type> | src=<first_source_url>"``
+(``status`` ∈ ``verified`` / ``notVerified`` / ``-``) capped at 500 chars.
 Emails are lowercased. Non-string emails and entries lacking ``@`` are filtered.
 """
 
@@ -152,7 +153,7 @@ def _entry_to_draft(entry: Any) -> DiscoveredEmailDraft | None:
     raw_prob = entry.get("probability")
     confidence = float(raw_prob) / 100.0 if isinstance(raw_prob, (int, float)) else None
 
-    position = entry.get("position") or "-"
+    status = entry.get("status") or "-"
     email_type = entry.get("type") or "-"
     sources = entry.get("sources") or []
     first_url = "-"
@@ -161,7 +162,7 @@ def _entry_to_draft(entry: Any) -> DiscoveredEmailDraft | None:
         if isinstance(first, dict):
             first_url = str(first.get("url") or "-")
 
-    attribution = f"snov: {position} | {email_type} | src={first_url}"[:ATTRIBUTION_CHAR_CAP]
+    attribution = f"snov: {status} | {email_type} | src={first_url}"[:ATTRIBUTION_CHAR_CAP]
 
     return DiscoveredEmailDraft(
         email=email.lower(),

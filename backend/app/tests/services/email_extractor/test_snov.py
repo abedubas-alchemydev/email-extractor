@@ -59,6 +59,7 @@ async def test_happy_path_two_emails(monkeypatch: pytest.MonkeyPatch) -> None:
                         "position": "CEO",
                         "type": "personal",
                         "probability": 92,
+                        "status": "verified",
                         "sources": [{"url": "https://stripe.com/team"}],
                     },
                     {
@@ -81,9 +82,40 @@ async def test_happy_path_two_emails(monkeypatch: pytest.MonkeyPatch) -> None:
     by_email = {d.email: d for d in result.emails}
     assert by_email["patrick@stripe.com"].source == "snov"
     assert by_email["patrick@stripe.com"].confidence == 0.92
-    assert "CEO" in (by_email["patrick@stripe.com"].attribution or "")
+    assert "verified" in (by_email["patrick@stripe.com"].attribution or "")
     assert "stripe.com/team" in (by_email["patrick@stripe.com"].attribution or "")
     assert by_email["info@stripe.com"].confidence == 0.50
+
+
+@respx.mock
+async def test_free_tier_shape_produces_useful_attribution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Snov free tier ships {email, type, status} only — no position/probability/sources.
+    The status field carries the useful signal (verified / notVerified)."""
+    _set_creds(monkeypatch, "id-1", "secret-1")
+    _set_limit(monkeypatch, 100)
+    _mock_oauth_ok()
+    respx.get(DOMAIN_EMAILS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "success": True,
+                "emails": [
+                    {"email": "ops@example.com", "type": "email", "status": "notVerified"},
+                ],
+            },
+        )
+    )
+
+    result = await Snov().run("example.com")
+
+    assert result.errors == []
+    assert len(result.emails) == 1
+    draft = result.emails[0]
+    assert draft.email == "ops@example.com"
+    assert draft.confidence is None
+    assert draft.attribution is not None
+    assert "notVerified" in draft.attribution
+    assert "email" in draft.attribution
 
 
 @respx.mock
