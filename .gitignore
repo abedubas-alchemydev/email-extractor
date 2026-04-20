@@ -90,3 +90,9 @@ prompts/*
 !prompts/TEMPLATE.md
 !prompts/README.md
 !prompts/.gitkeep
+
+# reports/ — chat-side audit / verification scratchpad (same convention as prompts/).
+# Keep an optional README.md + .gitkeep tracked; ignore individual report files.
+reports/*
+!reports/README.md
+!reports/.gitkeep

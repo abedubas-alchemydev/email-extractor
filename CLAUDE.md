@@ -255,7 +255,7 @@ This section is the durable scratchpad for facts and decisions that outlive a si
 
 ## 10. Codebase map
 
-> Snapshot generated 2026-04-19 at the close of the initial-scaffold prompt.
+> Snapshot generated 2026-04-20 after PR #7 (theharvester-error-spec-tightening).
 > Refresh via `/init` (Section 10 only — sections 1–9 are hand-authored intent).
 > All entries below reference real files; nothing is templated.
 
@@ -263,15 +263,18 @@ This section is the durable scratchpad for facts and decisions that outlive a si
 
 ```
 .env.example                 documented env vars for both backend and frontend
-.github/workflows/ci.yml     two-job CI: backend (ruff + ruff-format + basedpyright + pytest), frontend (next lint + next build)
-.gitignore                   excludes .venv/, node_modules/, .next/, .env, *.log, workspace artifacts
+.github/workflows/ci.yml     three-job CI: backend (ruff + ruff-format + basedpyright + pytest unit + alembic + pytest integration on a postgres:15-alpine service container), frontend (next lint + next build), compose-lint (asserts postgres 5432 binding stays loopback)
+.gitignore                   excludes .venv/, node_modules/, .next/, .env, *.log, workspace artifacts; carves out prompts/{TEMPLATE,README}.md and reports/{README}.md as the only tracked items in those dirs
 CLAUDE.md                    THIS file — sections 1–9 are hand-authored intent; section 10 is auto-generated
 README.md                    project pitch, quickstart, working-protocol pointer
-docker-compose.yml           postgres:15-alpine + backend (port 8000) + frontend (port 3000); healthcheck-gated startup
-docs/decisions/0001-…        ADR for the initial stack (FastAPI + Next.js 14 + Postgres + Alembic)
-plans/                       /plan output files written before each task
-prompts/                     prompt files executed by Claude Code CLI; TEMPLATE.md defines the schema
-reports/                     audit / analysis / verification reports (empty post-scaffold)
+docker-compose.yml           postgres:15-alpine bound to 127.0.0.1:5432 (loopback only) + backend (port 8000) + frontend (host port via FRONTEND_HOST_PORT, default 3000); healthcheck-gated startup
+docs/decisions/0001-initial-stack.md
+                             ADR for the initial stack (FastAPI + Next.js 14 + Postgres + Alembic)
+docs/decisions/0002-provider-error-prefix-convention.md
+                             ADR codifying the provider error-message prefix convention: providers emit bare error strings; aggregator wraps each with `<provider.name>: ` exactly once
+plans/                       /plan output files written before each task (gitignored except .gitkeep)
+prompts/                     prompt files executed by Claude Code CLI (gitignored except TEMPLATE.md, README.md, .gitkeep)
+reports/                     audit / analysis / verification reports (gitignored — local scratchpad)
 scripts/__init__.py          package marker — enables `python -m scripts.<name>`
 scripts/verify.sh            green-check pipeline: backend lint+typecheck+tests, frontend lint+build
 ```
@@ -279,53 +282,88 @@ scripts/verify.sh            green-check pipeline: backend lint+typecheck+tests,
 ### Backend (`backend/`)
 
 ```
-Dockerfile                   python:3.11-slim, $PORT-aware uvicorn entry
+Dockerfile                   python:3.11-slim base; pip-installs requirements.txt; pipx-installs theHarvester from upstream git tag (ARG THEHARVESTER_REF=<SHA> → /usr/local/bin/theHarvester); $PORT-aware uvicorn entry
 alembic.ini                  sqlalchemy.url left blank — env.py sets it from settings.database_url
-alembic/env.py               sync online migrations via engine_from_config + pool.NullPool; +asyncpg stripped from URL
+alembic/env.py               sync online migrations via engine_from_config + pool.NullPool; +asyncpg stripped from URL (project uses psycopg, but env.py is defensive)
 alembic/script.py.mako       generated revision template
-alembic/versions/.gitkeep    no migrations yet — first one lands with the first model
+alembic/versions/78f509b95848_initial_email_extractor_schema.py
+                             initial schema: extraction_runs, discovered_emails, email_verifications (3 tables; FKs CASCADE; unique on (run_id, email))
 pyproject.toml               Ruff (E, F, I, UP, B, SIM, ASYNC; B008 ignored) + basedpyright (3.11, includes app/, noisy categories muted)
-pytest.ini                   testpaths=app/tests, pythonpath=., asyncio_mode=auto
-requirements.txt             alembic, fastapi, SQLAlchemy 2.0 async, pydantic-settings, httpx, psycopg[binary], asyncpg, selectolax, etc.
+pytest.ini                   testpaths=app/tests, pythonpath=., asyncio_mode=auto, addopts=-m "not integration", `integration` marker registered
+requirements.txt             alembic, fastapi, SQLAlchemy 2.0 async, pydantic-settings, httpx, psycopg[binary], selectolax (theHarvester intentionally NOT pinned here — installed via Dockerfile pipx; PyPI's `theHarvester` is a placeholder squatter)
 requirements-dev.txt         pytest, pytest-asyncio, respx, ruff, basedpyright (extends requirements.txt)
-.env.example                 backend-only env vars (loaded second, override=True)
+.env.example                 backend-only env vars (loaded second, override=True): EMAIL_EXTRACTOR_API_KEY, HUNTER_API_KEY, APOLLO_API_KEY, SNOV_API_KEY, HUNTER_LIMIT, THEHARVESTER_SOURCES, THEHARVESTER_TIMEOUT_SECONDS
 
 app/main.py                  FastAPI app with async lifespan disposing the SQLAlchemy engine; Windows event-loop shim; root /health
-app/core/config.py           Settings(BaseSettings) with cors_origins computed_field; loads root .env then backend/.env (backend wins)
+app/core/config.py           Settings(BaseSettings) with cors_origins computed_field; loads root .env then backend/.env (backend wins); HUNTER_LIMIT (1..100, default 10) and THEHARVESTER_TIMEOUT_SECONDS (10..300, default 90) validated at app startup
 app/core/security.py         require_access Depends — Bearer-token auth dev-mode-permissive; swaps to BetterAuth on merge
-app/db/base.py               DeclarativeBase; model imports register Base.metadata for Alembic (none yet)
+app/db/base.py               DeclarativeBase; model imports register Base.metadata for Alembic
 app/db/session.py            async engine + SessionLocal + get_db_session() FastAPI dependency
 app/api/router.py            mounts api_v1_router (single layer of indirection mirrors fis-lead-gen)
-app/api/v1/api.py            includes endpoints/health.router (no email-extractor router yet)
+app/api/v1/api.py            includes endpoints/health.router and endpoints/email_extractor.router
 app/api/v1/endpoints/health.py
                              GET /health → {"status": "ok"}
-app/schemas/__init__.py      DTOs go here (none yet)
-app/models/__init__.py       SQLAlchemy models go here (none yet)
-app/services/__init__.py     business logic goes here; future: services/email_extractor/{base,aggregator,hunter,apollo,snov,site_crawler,theharvester,verification}.py
+app/api/v1/endpoints/email_extractor.py
+                             POST /scans (creates ExtractionRun, schedules aggregator), GET /scans/{id} (state + discovered_emails with verifications), GET /scans/{id}/events (SSE for live progress), POST /verify (per-row SMTP verification — endpoint registered, check_smtp impl deferred)
+app/schemas/email_extractor.py
+                             Pydantic v2 DTOs: ScanCreateRequest, ScanResponse, DiscoveredEmailResponse, EmailVerificationResponse — mirror the SQLAlchemy models for the JSON wire format
+app/models/extraction_run.py
+                             SQLAlchemy 2.0 Mapped[] model; Int autoincrement PK; status (queued/running/completed/failed); pipeline_name="email_extractor" (mirrors fis-lead-gen PipelineRun for merge symmetry); started_at/completed_at timestamps; counters; error_message text
+app/models/discovered_email.py
+                             SQLAlchemy model — FK extraction_runs CASCADE; unique (run_id, email); source/confidence/attribution columns
+app/models/email_verification.py
+                             SQLAlchemy model — FK discovered_emails CASCADE; syntax_valid, mx_record_present, smtp_status enum (not_checked/deliverable/undeliverable/inconclusive), smtp_message
+app/services/email_extractor/base.py
+                             EmailSource Protocol + DiscoveredEmailDraft + DiscoveryResult dataclasses (the ADR 0002 contract surface)
+app/services/email_extractor/aggregator.py
+                             Real fan-out via anyio.create_task_group; per-provider exception isolation; cross-provider dedupe on lowercased email; inline syntax+MX verification per draft; persists DiscoveredEmail + EmailVerification rows; wraps each provider error with f"{provider.name}: {err}" exactly once (ADR 0002)
+app/services/email_extractor/hunter.py
+                             Hunter.io domain-search provider; HUNTER_LIMIT sourced from settings; bare-error contract; plan-limit 400 detection (free tier returns 400 if limit > plan max)
+app/services/email_extractor/site_crawler.py
+                             httpx + selectolax + regex with deobfuscation (atob/HTML entities/[at]/(at) forms); robots.txt-aware; bare-error contract
+app/services/email_extractor/theharvester.py
+                             Subprocess wrapper around theHarvester CLI (pipx-installed via Dockerfile); free OSINT sources only (default crtsh,rapiddns,otx,duckduckgo); module-level _run_subprocess seam for tests; bare-error contract; missing emails-key in JSON = empty success (matches upstream behavior)
+app/services/email_extractor/verification.py
+                             check_syntax_and_mx via email-validator (syntax + MX lookup); runs inline on every persisted draft; SMTP verification (RCPT TO handshake) deferred to a future per-row endpoint
 app/tests/__init__.py
-app/tests/test_main.py       3 tests: root /health, /api/v1/health, respx pattern-seed
+app/tests/test_main.py       3 unit tests: root /health, /api/v1/health, respx pattern-seed
+app/tests/api/test_email_extractor_scans.py
+                             2 integration tests (pytest.mark.integration): scan POST/GET round trip, 404 for unknown id
+app/tests/services/email_extractor/test_aggregator.py
+                             5 integration tests: persistence happy path, exception isolation, all-providers-fail → status=failed, ADR 0002 single-provider prefix, ADR 0002 multi-provider independent prefixes
+app/tests/services/email_extractor/test_hunter.py
+                             11 respx tests: happy path, all 4xx/5xx error branches, plan-limit 400, configurable HUNTER_LIMIT flows through to URL query param
+app/tests/services/email_extractor/test_site_crawler.py
+                             6 respx tests: mailto+text+obfuscated extraction, robots disallow, 500 error, non-HTML content-type skip, off-domain filter, dedupe across pages
+app/tests/services/email_extractor/test_theharvester.py
+                             25 tests with mocked _run_subprocess: happy paths, every error branch, ADR 0002 bare-error contract parametrized over 10 fixtures
+app/tests/services/email_extractor/test_verification.py
+                             3 tests: valid syntax+MX, invalid syntax, MX lookup failure
 ```
 
 ### Frontend (`frontend/`)
 
 ```
-Dockerfile                   multi-stage Node 20 alpine; output: standalone; non-root user
-.env.example                 NEXT_PUBLIC_API_BASE_URL only
+Dockerfile                   multi-stage Node 20 alpine; output: standalone; non-root user; honors NEXT_PUBLIC_API_BASE_URL build arg (single-dash default = empty string for same-origin /api/* paths)
+.env.example                 NEXT_PUBLIC_API_BASE_URL only (default empty → uses Next.js rewrites locally; nginx terminates /api/* in production)
 .eslintrc.json               next/core-web-vitals defaults
 .gitignore                   node_modules/, .next/, .env*.local, *.tsbuildinfo, next-env.d.ts
-next.config.mjs              output: "standalone" for Docker bundling
+README.md                    inherited Next.js scaffold
+next.config.mjs              output: "standalone" + async rewrites() forwarding /api/* to BACKEND_INTERNAL_URL when set (Docker dev)
 package.json                 next 14.2.x, react 18, lucide-react, tailwindcss, eslint-config-next
+package-lock.json            npm lockfile
 postcss.config.mjs           tailwindcss + autoprefixer
-tailwind.config.ts           content: app/, components/ (the latter not yet created)
+public/.gitkeep              Next.js's expected static-asset dir (placeholder)
+tailwind.config.ts           content: app/, components/ (components/ not yet created)
 tsconfig.json                @/* import alias mapped to repo root
 
 app/layout.tsx               root layout with Geist fonts
-app/page.tsx                 placeholder landing — links to /email-extractor (route deferred)
+app/page.tsx                 domain-search UI: form, polling (1.5s interval, 180s timeout), results table with verification cells; centers on empty state, top-aligns once a scan returns
 app/globals.css              Tailwind base/components/utilities + dark-mode CSS vars
 app/favicon.ico              default Next.js favicon
 app/fonts/                   Geist + GeistMono woff binaries
 
-lib/api.ts                   fetch wrapper with credentials:"include"; ApiError class; reads NEXT_PUBLIC_API_BASE_URL
+lib/api.ts                   fetch wrapper with credentials:"include"; ApiError class; reads NEXT_PUBLIC_API_BASE_URL (empty → relative URLs)
 lib/types.ts                 placeholder — populated as feature work lands
 ```
 
@@ -335,18 +373,24 @@ lib/types.ts                 placeholder — populated as feature work lands
 - Async by default for anything touching DB or network; sync only for pure functions.
 - HTTP client: per-request `httpx.AsyncClient` (no long-lived pools).
 - Tests mock outbound HTTP via `respx` — never hit real Hunter/Apollo/Snov/SMTP.
+- Subprocess-based providers (theHarvester) seam through a module-level `_run_subprocess` helper so tests monkeypatch without spawning real processes.
+- Provider error contract (ADR 0002): providers emit BARE error strings; the aggregator wraps each with `f"{provider.name}: {err}"` exactly once when persisting to `extraction_run.error_message`. Never self-prefix in a provider.
+- Integration tests are gated by `@pytest.mark.integration` and skipped by default (`pytest.ini` `addopts = -m "not integration"`); CI runs them in a separate step against a `postgres:15-alpine` service container.
+- Postgres in `docker-compose.yml` is bound to `127.0.0.1:5432` only — never expose 5432 publicly. The `compose-lint` CI job greps for non-loopback bindings.
 - Env loading precedence: root `.env` first, then `backend/.env` (wins). Don't consolidate.
 - Commits: zero AI attribution; stage by name; never `--no-verify`.
+- Migrations: alembic only — never edit schemas outside of a migration.
+- Active `gh auth` account must be `abedubas-alchemydev` for any `git push` / `gh pr` operation against this repo (see `~/.claude/projects/.../memory/reference_github_identity.md`); other accounts get HTTP 403.
 
 ### What is NOT here yet
 
-Documented in §7 (integration path) and §8 (rejected alternatives); explicitly out of scope for the initial-scaffold prompt:
+Genuinely-not-started items as of 2026-04-20:
 
-- Discovery providers (`services/email_extractor/{hunter,apollo,snov,site_crawler,theharvester}.py`) and their tests.
-- The aggregator and `EmailSource` Protocol.
-- Models (`extraction_run.py`, `discovered_email.py`, `email_verification.py`) and the first Alembic revision.
-- Endpoints under `api/v1/endpoints/email_extractor.py`.
-- Frontend route `app/email-extractor/` and its components.
+- Apollo provider (`services/email_extractor/apollo.py` + tests) — deferred (free-tier API key returns zero emails per `reports/apollo-endpoint-probe-2026-04-19.md`).
+- Snov provider — blocked on signup approval.
+- SMTP verification implementation (`verification.check_smtp` — endpoint `POST /verify` is wired but the impl is a stub; py3-validate-email integration deferred).
 - GCP Cloud Run deploy workflow.
-- VPS staging setup (see `prompts/2026-04-19-0916-vps-staging-setup.md`).
-- Docker Compose integration test (deferred to `prompts/2026-04-19-0845-docker-stack-setup.md`).
+- Frontend route `app/email-extractor/[scanId]/page.tsx` (dedicated live-updates view) — current `app/page.tsx` is the all-in-one search UI.
+- Frontend `components/` directory (referenced in `tailwind.config.ts` content glob but not yet populated).
+- Live-subprocess theHarvester integration test (kept binary-free in CI; only Docker image has it).
+- `prompts/README.md` and `reports/README.md` (gitignore carve-outs reserve the slots; files themselves are optional and not yet authored).
