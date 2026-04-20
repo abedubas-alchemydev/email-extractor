@@ -9,3 +9,7 @@ python-dotenv==1.0.1
 SQLAlchemy==2.0.45
 uvicorn[standard]>=0.32.1
 selectolax>=0.3.21
+# theHarvester OSINT CLI — laramies/theHarvester is not on PyPI under that name
+# (the PyPI `theHarvester==0.0.1` is a placeholder squatter), so we install from
+# the upstream tag directly. SHA for 4.9.2: ba85366644131d5f170cc7016d4ed99b9817889a
+theHarvester @ git+https://github.com/laramies/theHarvester.git@4.9.2

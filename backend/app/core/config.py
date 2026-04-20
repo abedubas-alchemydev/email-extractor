@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # Hunter returns HTTP 400 if this exceeds the plan max — keep at 10 on free.
     hunter_limit: int = Field(default=10, ge=1, le=100)
 
+    # theHarvester OSINT provider — comma-separated source list and per-call timeout.
+    # Defaults are free-only sources that don't require API keys.
+    theharvester_sources: str = "crtsh,rapiddns,otx,duckduckgo"
+    theharvester_timeout_seconds: int = Field(default=90, ge=10, le=300)
+
     @computed_field
     @property
     def cors_origins(self) -> list[str]:
