@@ -9,6 +9,10 @@ python-dotenv==1.0.1
 SQLAlchemy==2.0.45
 uvicorn[standard]>=0.32.1
 selectolax>=0.3.21
+# py3-validate-email — SMTP RCPT TO probe library. Pinned exactly because the
+# library's SMTP handshake semantics have shifted across minor versions in the
+# past. Imports as `validate_email` (package name on PyPI is `py3-validate-email`).
+py3-validate-email==1.0.5.post1
 # theHarvester OSINT CLI is intentionally NOT pinned here — laramies/theHarvester
 # is not on PyPI under that name (the PyPI `theHarvester==0.0.1` is a placeholder
 # squatter) and every recent upstream tag fails to install in this project's pin

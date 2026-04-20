@@ -1,11 +1,14 @@
-"""Inline verification: syntax + MX presence.
+"""Inline verification: syntax + MX presence; on-demand: SMTP RCPT TO.
 
-Runs against every discovered email immediately on insert. SMTP RCPT is a
-separate, user-triggered endpoint and lives in another module.
+``check_syntax_and_mx`` runs on every discovered email at insert time
+(``email-validator``'s ``validate_email(check_deliverability=True)`` —
+syntax parse + DNS MX lookup, sync, offloaded via ``anyio.to_thread.run_sync``).
 
-``email-validator``'s ``validate_email(check_deliverability=True)`` does both
-the syntax parse and a DNS MX lookup. It's synchronous; we offload to a
-worker thread so the aggregator's event loop isn't blocked on DNS.
+``check_smtp`` is the on-demand SMTP RCPT TO probe via ``py3-validate-email``
+(imports as ``validate_email`` — note the package-vs-import name discrepancy).
+Wraps the sync probe in ``anyio.to_thread.run_sync`` so the event loop isn't
+blocked on network I/O. Maps the library's three-state return (True/False/None)
+onto our ``SmtpStatus`` enum and exceptions onto ``blocked``. Never raises.
 """
 
 from __future__ import annotations
@@ -17,6 +20,10 @@ from email_validator import (
     EmailUndeliverableError,
     validate_email,
 )
+from validate_email import validate_email as _smtp_validate_email  # py3-validate-email
+
+from app.core.config import settings
+from app.models.email_verification import SmtpStatus
 
 
 async def check_syntax_and_mx(email: str) -> tuple[bool, bool, str | None]:
@@ -42,3 +49,42 @@ async def check_syntax_and_mx(email: str) -> tuple[bool, bool, str | None]:
         return False, False, str(exc)
     except Exception as exc:  # noqa: BLE001
         return False, False, f"verification failed: {exc}"
+
+
+async def check_smtp(email: str) -> tuple[SmtpStatus, str | None]:
+    """Perform an SMTP RCPT TO probe against ``email``.
+
+    Never raises. Maps ``py3-validate-email``'s three-state return onto our
+    ``SmtpStatus`` enum:
+      - ``True``  → ``deliverable``
+      - ``False`` → ``undeliverable``
+      - ``None``  → ``inconclusive`` (usually a greylist / tempfail)
+    Exceptions (SMTP disconnect, DNS failure) are mapped to ``blocked`` with
+    the exception class name in ``smtp_message``. Error strings are bare.
+    """
+
+    def _probe() -> bool | None:
+        return _smtp_validate_email(
+            email_address=email,
+            check_format=False,  # already validated by check_syntax_and_mx
+            check_blacklist=False,  # out of scope for this tool
+            check_dns=True,
+            dns_timeout=settings.smtp_verify_timeout_seconds,
+            check_smtp=True,
+            smtp_timeout=settings.smtp_verify_timeout_seconds,
+            smtp_helo_host=settings.smtp_verify_helo_host,
+            smtp_from_address=settings.smtp_verify_from_address,
+            smtp_skip_tls=False,
+            smtp_debug=False,
+        )
+
+    try:
+        result = await to_thread.run_sync(_probe)
+    except Exception as exc:  # noqa: BLE001 — py3-validate-email raises a menagerie
+        return SmtpStatus.blocked, f"{exc.__class__.__name__}"
+
+    if result is True:
+        return SmtpStatus.deliverable, None
+    if result is False:
+        return SmtpStatus.undeliverable, None
+    return SmtpStatus.inconclusive, None
