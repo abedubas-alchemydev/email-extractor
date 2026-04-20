@@ -129,6 +129,97 @@ async def test_all_providers_raise_marks_run_failed(monkeypatch: pytest.MonkeyPa
         assert "p1" in scan.error_message and "p2" in scan.error_message
 
 
+async def test_dedup_keeps_highest_confidence_across_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cross-provider dedup: lowercased email key, keep highest confidence.
+
+    Provider A: Dup@Example.com @ 0.7, a-only@example.com @ 0.6
+    Provider B: dup@example.com @ 0.9, b-only@example.com @ 0.5
+
+    Asserts: 3 rows total; the surviving dup row has source='b' and
+    confidence=0.9; both -only rows survive unchanged. Pins the contract
+    documented in aggregator.py's module docstring.
+    """
+    _stub_verification(monkeypatch)
+    run_id = await _new_scan()
+
+    a: EmailSource = _FakeProvider(
+        "a",
+        DiscoveryResult(
+            emails=[
+                DiscoveredEmailDraft(email="Dup@Example.com", source="a", confidence=0.7),
+                DiscoveredEmailDraft(email="a-only@example.com", source="a", confidence=0.6),
+            ]
+        ),
+    )
+    b: EmailSource = _FakeProvider(
+        "b",
+        DiscoveryResult(
+            emails=[
+                DiscoveredEmailDraft(email="dup@example.com", source="b", confidence=0.9),
+                DiscoveredEmailDraft(email="b-only@example.com", source="b", confidence=0.5),
+            ]
+        ),
+    )
+
+    await aggregator.run(run_id, providers=[a, b])
+
+    async with SessionLocal() as session:
+        rows = (await session.execute(select(DiscoveredEmail).where(DiscoveredEmail.run_id == run_id))).scalars().all()
+
+        assert len(rows) == 3, f"expected 3 deduped rows, got {[(r.email, r.source) for r in rows]}"
+
+        by_lowered = {r.email.lower(): r for r in rows}
+        assert set(by_lowered.keys()) == {
+            "dup@example.com",
+            "a-only@example.com",
+            "b-only@example.com",
+        }
+
+        dup = by_lowered["dup@example.com"]
+        assert dup.source == "b", f"higher-confidence provider should win, got source={dup.source}"
+        assert dup.confidence == 0.9, f"surviving confidence should be unchanged 0.9, got {dup.confidence}"
+
+        a_only = by_lowered["a-only@example.com"]
+        assert a_only.source == "a"
+        assert a_only.confidence == 0.6
+
+        b_only = by_lowered["b-only@example.com"]
+        assert b_only.source == "b"
+        assert b_only.confidence == 0.5
+
+
+async def test_dedup_tie_keeps_one_row_with_undefined_winner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Confidence-tie behaviour: exactly one row survives; winner is non-deterministic.
+
+    The aggregator's tie-break is `draft.confidence > existing.confidence` (strict >),
+    so the first-seen draft wins. "First-seen" is governed by task completion order
+    inside `anyio.create_task_group`, which is not contractually deterministic.
+    Asserts only the count and that source ∈ {a, b} — see
+    reports/aggregator-dedup-audit-2026-04-20.md for the full reasoning.
+    """
+    _stub_verification(monkeypatch)
+    run_id = await _new_scan()
+
+    a: EmailSource = _FakeProvider(
+        "a",
+        DiscoveryResult(emails=[DiscoveredEmailDraft(email="tied@example.com", source="a", confidence=0.8)]),
+    )
+    b: EmailSource = _FakeProvider(
+        "b",
+        DiscoveryResult(emails=[DiscoveredEmailDraft(email="tied@example.com", source="b", confidence=0.8)]),
+    )
+
+    await aggregator.run(run_id, providers=[a, b])
+
+    async with SessionLocal() as session:
+        rows = (await session.execute(select(DiscoveredEmail).where(DiscoveredEmail.run_id == run_id))).scalars().all()
+
+        assert len(rows) == 1, f"expected exactly 1 deduped row, got {[(r.email, r.source) for r in rows]}"
+        assert rows[0].email.lower() == "tied@example.com"
+        assert rows[0].source in {"a", "b"}
+        assert rows[0].confidence == 0.8
+
+
 def test_default_providers_includes_all_four_sources() -> None:
     """Regression: every provider class shipped under services/email_extractor/
     must be wired into the production fan-out. Set-equality (not subset) so
