@@ -40,9 +40,7 @@ def upgrade() -> None:
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        op.f("ix_verification_runs_status"), "verification_runs", ["status"], unique=False
-    )
+    op.create_index(op.f("ix_verification_runs_status"), "verification_runs", ["status"], unique=False)
 
 
 def downgrade() -> None:
