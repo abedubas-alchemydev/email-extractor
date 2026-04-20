@@ -24,6 +24,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from app.api.v1.endpoints import email_extractor as endpoint_module
 from app.core import config
 from app.db.session import SessionLocal
 from app.main import app
@@ -66,6 +67,24 @@ def _patch_check_smtp(monkeypatch: pytest.MonkeyPatch, fake: SmtpFn) -> None:
     monkeypatch.setattr(verification_runner, "check_smtp", fake)
 
 
+def _patch_runner_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No-op the endpoint's `run_smtp_verification` binding.
+
+    `httpx.ASGITransport` synchronously awaits FastAPI `BackgroundTasks` before
+    returning the response — it does not match the production behaviour where
+    uvicorn fires BG tasks after the response is on the wire. Patching the
+    endpoint module's bound name keeps POST near-instant and lets each test
+    drive the runner explicitly via the `await run_smtp_verification(...)`
+    helper, with deterministic ordering and no exception propagation through
+    the transport layer.
+    """
+
+    async def _noop(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(endpoint_module, "run_smtp_verification", _noop)
+
+
 async def _post_verify(payload: dict[str, object]) -> httpx.Response:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -83,11 +102,7 @@ async def _get_verify_run(run_id: int) -> httpx.Response:
 
 async def test_verify_post_returns_queued_run_id(monkeypatch: pytest.MonkeyPatch) -> None:
     email_ids = await _seed_emails(2)
-
-    async def fake(_email: str) -> tuple[SmtpStatus, str | None]:
-        return SmtpStatus.deliverable, None
-
-    _patch_check_smtp(monkeypatch, fake)
+    _patch_runner_noop(monkeypatch)
 
     response = await _post_verify({"email_ids": email_ids})
 
@@ -104,21 +119,22 @@ async def test_verify_post_returns_queued_run_id(monkeypatch: pytest.MonkeyPatch
 
 
 async def test_verify_post_completes_in_under_500ms(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST must return immediately even with a slow probe — work is deferred."""
+    """POST must return immediately — runner is no-op'd to isolate handler latency.
+
+    `httpx.ASGITransport` synchronously awaits FastAPI BackgroundTasks before
+    returning the response, so the only way to measure the handler's own work
+    in-process is to patch the runner to a no-op. In production, uvicorn fires
+    BG tasks after the response is on the wire.
+    """
     email_ids = await _seed_emails(5)
-
-    async def fake_slow(_email: str) -> tuple[SmtpStatus, str | None]:
-        await asyncio.sleep(2.0)
-        return SmtpStatus.deliverable, None
-
-    _patch_check_smtp(monkeypatch, fake_slow)
+    _patch_runner_noop(monkeypatch)
 
     start = time.perf_counter()
     response = await _post_verify({"email_ids": email_ids})
     elapsed = time.perf_counter() - start
 
     assert response.status_code == 202
-    assert elapsed < 0.5, f"POST should be near-instant; took {elapsed:.3f}s"
+    assert elapsed < 0.5, f"POST handler should be near-instant; took {elapsed:.3f}s"
 
 
 # --- GET /verify-runs/{id} after run completion ----------------------------
@@ -133,13 +149,14 @@ async def test_verify_run_get_returns_results_after_completion(
         return SmtpStatus.deliverable, None
 
     _patch_check_smtp(monkeypatch, fake)
+    _patch_runner_noop(monkeypatch)
 
     post_response = await _post_verify({"email_ids": email_ids})
     assert post_response.status_code == 202
     verify_run_id = post_response.json()["verify_run_id"]
 
-    # BackgroundTasks timing inside ASGITransport isn't deterministic — run the
-    # task body directly so the assertions don't race the response cycle.
+    # The endpoint's BG task is no-op'd; run the real runner explicitly so
+    # assertions don't race the ASGI response cycle.
     await run_smtp_verification(verify_run_id=verify_run_id, email_ids=email_ids)
 
     response = await _get_verify_run(verify_run_id)
@@ -167,6 +184,7 @@ async def test_verify_run_preserves_input_order(monkeypatch: pytest.MonkeyPatch)
         return SmtpStatus.deliverable, None
 
     _patch_check_smtp(monkeypatch, fake)
+    _patch_runner_noop(monkeypatch)
 
     post_response = await _post_verify({"email_ids": reordered})
     verify_run_id = post_response.json()["verify_run_id"]
@@ -185,6 +203,7 @@ async def test_verify_run_inconclusive_round_trip(monkeypatch: pytest.MonkeyPatc
         return SmtpStatus.inconclusive, None
 
     _patch_check_smtp(monkeypatch, fake)
+    _patch_runner_noop(monkeypatch)
 
     post_response = await _post_verify({"email_ids": email_ids})
     verify_run_id = post_response.json()["verify_run_id"]
@@ -211,6 +230,7 @@ async def test_verify_run_failed_status_on_exception(monkeypatch: pytest.MonkeyP
         raise RuntimeError("simulated probe failure")
 
     _patch_check_smtp(monkeypatch, fake_boom)
+    _patch_runner_noop(monkeypatch)
 
     post_response = await _post_verify({"email_ids": email_ids})
     verify_run_id = post_response.json()["verify_run_id"]
@@ -241,6 +261,7 @@ async def test_verify_unknown_id_does_not_write_verification(
         return SmtpStatus.deliverable, None
 
     _patch_check_smtp(monkeypatch, fake)
+    _patch_runner_noop(monkeypatch)
 
     post_response = await _post_verify({"email_ids": payload_ids})
     assert post_response.status_code == 202
