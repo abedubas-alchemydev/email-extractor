@@ -77,6 +77,11 @@ pip install -r requirements-dev.txt
 pytest app/tests/ -v --tb=short                    # full suite
 pytest app/tests/services/                         # one folder
 pytest -k "hunter or verification"                 # keyword filter
+
+# Integration tests are deselected by default (pytest.ini: addopts = -m "not integration").
+# To actually run them, Postgres must be reachable (docker-compose up -d postgres):
+pytest -m integration app/tests/services/email_extractor/test_aggregator.py -v
+pytest --override-ini="addopts=" -m integration app/tests/ -v   # full integration suite
 ```
 
 Tests use `respx` to mock httpx and `monkeypatch` for config. They never hit real Hunter/Apollo/Snov or real SMTP.
@@ -88,6 +93,15 @@ npm install
 npm run dev        # :3000
 npm run build
 npm run lint
+```
+
+### Git push (every push to this repo)
+```bash
+# Active gh account drifts between sessions across three logged-in users
+# (abedubas-alchemydev, akosiArvin081596, arvinbedubas-vendoraph).
+# Run before every push, then verify:
+gh auth switch -u abedubas-alchemydev --hostname github.com
+gh auth status
 ```
 
 ### Scan runner (CLI, run from repo root)
@@ -189,6 +203,7 @@ This repo is operated with a **prompt-file-driven workflow**. The loop is:
 - Type annotations on every function signature and class attribute. `Mapped[...]` for SQLAlchemy columns.
 - Async by default for anything touching the DB or the network. Sync helpers only for pure functions.
 - Service-layer classes expose `async def run(self, db: AsyncSession, ...)` for long-running jobs, returning the `ExtractionRun` row they created.
+- **Provider error contract (ADR 0002):** providers emit **bare** error strings in `DiscoveryResult.errors`. The aggregator wraps each as `f"{provider.name}: {err}"` exactly once when writing to `ExtractionRun.error_message`. Never self-prefix from inside a provider — see `docs/decisions/0002-provider-error-prefix-convention.md`.
 - API keys and secrets live in `backend/.env` only. Never in `frontend/.env.local`, never in source.
 
 ### Testing
@@ -249,7 +264,8 @@ Kept brief here; full reasoning in `docs/decisions/0001-initial-stack.md`.
 
 This section is the durable scratchpad for facts and decisions that outlive a single prompt file — learnings, unexpected constraints, provider quirks, rate-limit bruises, anything that would make a future agent smarter. The chat agent may append here directly (no prompt file required). Keep entries short and dated.
 
-<!-- entries go here -->
+- **2026-04-20 — gh auth account drift on this machine.** Three gh accounts are logged in (`abedubas-alchemydev`, `akosiArvin081596`, `arvinbedubas-vendoraph`). The active account drifts between sessions; PRs #5, #6, #7 each hit 403 on push before the pre-push `gh auth switch` pattern (§3) became standard. Root cause not yet investigated — separate prompt pending.
+- **2026-04-20 — Hunter free-tier credit budget.** The configured `HUNTER_API_KEY` is on Hunter's free plan (25 searches + 50 verifications per month, refreshes 1st of month). As of this date ~6 credits consumed across smoke + dev runs. Watch the cap when designing new test domains; rotation/upgrade is Arvin's call.
 
 ---
 
