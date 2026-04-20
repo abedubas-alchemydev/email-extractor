@@ -53,21 +53,38 @@ async def run(run_id: int, providers: list[EmailSource] | None = None) -> None:
     if domain is None:
         return
 
-    deduped, errors, failed_providers = await _fan_out(providers, domain)
+    try:
+        deduped, errors, failed_providers = await _fan_out(providers, domain)
 
-    success, failure, persist_errors = await _persist_drafts(run_id, domain, deduped)
-    errors.extend(persist_errors)
+        success, failure, persist_errors = await _persist_drafts(run_id, domain, deduped)
+        errors.extend(persist_errors)
 
-    final_status = _final_status(providers, failed_providers)
+        final_status = _final_status(providers, failed_providers)
 
-    await _finalize_run(
-        run_id=run_id,
-        status=final_status,
-        total=len(deduped),
-        success=success,
-        failure=failure,
-        errors=errors,
-    )
+        await _finalize_run(
+            run_id=run_id,
+            status=final_status,
+            total=len(deduped),
+            success=success,
+            failure=failure,
+            errors=errors,
+        )
+    except Exception as exc:
+        # Crash-safety: any uncaught error in fan-out / persist / finalize would
+        # otherwise leave the run stuck at status="running" forever (a crashed
+        # FastAPI BackgroundTask doesn't rollback the started-state). Write a
+        # terminal `failed` row so the frontend stops polling, then re-raise so
+        # the traceback still reaches logs/observability.
+        logger.exception("aggregator.run crashed for run_id=%s", run_id)
+        await _finalize_run(
+            run_id=run_id,
+            status=RunStatus.failed.value,
+            total=0,
+            success=0,
+            failure=0,
+            errors=[f"aggregator crash: {type(exc).__name__}: {exc}"],
+        )
+        raise
 
 
 async def _begin_run(run_id: int) -> str | None:
@@ -81,6 +98,18 @@ async def _begin_run(run_id: int) -> str | None:
         domain = scan.domain
         await session.commit()
         return domain
+
+
+def _sortable_confidence(c: float | None) -> float:
+    """Sentinel for ordering drafts: `None` = no information = always loses.
+
+    theHarvester deterministically emits `confidence=None`; Hunter and Snov
+    do so conditionally when upstream APIs omit the field. Comparing `None`
+    directly to a float raises `TypeError`, which crashed a production scan
+    on 2026-04-20 (www.southloop.vc); this helper makes the dedup loop
+    tolerant. See reports/aggregator-dedup-audit-2026-04-20.md Follow-up #2.
+    """
+    return c if c is not None else float("-inf")
 
 
 async def _fan_out(providers: list[EmailSource], domain: str) -> tuple[dict[str, DiscoveredEmailDraft], list[str], int]:
@@ -116,7 +145,7 @@ async def _fan_out(providers: list[EmailSource], domain: str) -> tuple[dict[str,
         for draft in emails:
             key = draft.email.lower()
             existing = deduped.get(key)
-            if existing is None or draft.confidence > existing.confidence:
+            if existing is None or _sortable_confidence(draft.confidence) > _sortable_confidence(existing.confidence):
                 deduped[key] = draft
 
     return deduped, errors, failed_providers

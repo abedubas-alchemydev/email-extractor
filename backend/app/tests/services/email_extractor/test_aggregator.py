@@ -220,6 +220,102 @@ async def test_dedup_tie_keeps_one_row_with_undefined_winner(monkeypatch: pytest
         assert rows[0].confidence == 0.8
 
 
+async def test_dedup_handles_none_confidence_against_float(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression for the 2026-04-20 southloop.vc crash.
+
+    theHarvester always emits confidence=None; site_crawler always emits a float.
+    Before the fix, the comparison `None > 0.5` raised TypeError, killing the
+    entire run mid-fan-out and leaving status='running' forever. After the fix,
+    the float draft wins (None is treated as -inf) and the run completes.
+    """
+    _stub_verification(monkeypatch)
+    run_id = await _new_scan()
+
+    a: EmailSource = _FakeProvider(
+        "a",
+        DiscoveryResult(emails=[DiscoveredEmailDraft(email="dup@example.com", source="a", confidence=None)]),
+    )
+    b: EmailSource = _FakeProvider(
+        "b",
+        DiscoveryResult(emails=[DiscoveredEmailDraft(email="dup@example.com", source="b", confidence=0.5)]),
+    )
+
+    await aggregator.run(run_id, providers=[a, b])
+
+    async with SessionLocal() as session:
+        scan = await session.get(ExtractionRun, run_id)
+        assert scan is not None
+        assert scan.status == RunStatus.completed.value
+
+        rows = (await session.execute(select(DiscoveredEmail).where(DiscoveredEmail.run_id == run_id))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].source == "b"
+        assert rows[0].confidence == 0.5
+
+
+async def test_dedup_handles_none_confidence_both_sides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two providers both emitting confidence=None for the same email must not crash.
+
+    Tie-break remains first-seen (same as the PR #16 tie case). The surviving
+    row's confidence is None — we intentionally don't coerce to 0 on the way
+    into the DB because the DiscoveredEmail column permits None.
+    """
+    _stub_verification(monkeypatch)
+    run_id = await _new_scan()
+
+    a: EmailSource = _FakeProvider(
+        "a",
+        DiscoveryResult(emails=[DiscoveredEmailDraft(email="dup@example.com", source="a", confidence=None)]),
+    )
+    b: EmailSource = _FakeProvider(
+        "b",
+        DiscoveryResult(emails=[DiscoveredEmailDraft(email="dup@example.com", source="b", confidence=None)]),
+    )
+
+    await aggregator.run(run_id, providers=[a, b])
+
+    async with SessionLocal() as session:
+        scan = await session.get(ExtractionRun, run_id)
+        assert scan is not None
+        assert scan.status == RunStatus.completed.value
+
+        rows = (await session.execute(select(DiscoveredEmail).where(DiscoveredEmail.run_id == run_id))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].source in {"a", "b"}
+        assert rows[0].confidence is None
+
+
+async def test_aggregator_marks_row_failed_on_unhandled_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Any uncaught exception in the aggregator body must mark the run failed.
+
+    Before the crash-safety wrapper, a crash in _fan_out / _persist_drafts
+    would propagate out of aggregator.run (a FastAPI BackgroundTask), be
+    silently logged by starlette, and leave status='running' forever. The
+    wrapper now writes a terminal `failed` row with a populated error_message
+    so the frontend stops polling. The original exception is re-raised for
+    log visibility.
+    """
+    _stub_verification(monkeypatch)
+    run_id = await _new_scan()
+
+    async def _boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(aggregator, "_fan_out", _boom)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await aggregator.run(run_id, providers=[_FakeProvider("x", DiscoveryResult())])
+
+    async with SessionLocal() as session:
+        scan = await session.get(ExtractionRun, run_id)
+        assert scan is not None
+        assert scan.status == RunStatus.failed.value
+        assert scan.completed_at is not None
+        assert scan.error_message is not None
+        assert "aggregator crash:" in scan.error_message
+        assert "boom" in scan.error_message
+
+
 def test_default_providers_includes_all_four_sources() -> None:
     """Regression: every provider class shipped under services/email_extractor/
     must be wired into the production fan-out. Set-equality (not subset) so
