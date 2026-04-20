@@ -11,5 +11,7 @@ uvicorn[standard]>=0.32.1
 selectolax>=0.3.21
 # theHarvester OSINT CLI — laramies/theHarvester is not on PyPI under that name
 # (the PyPI `theHarvester==0.0.1` is a placeholder squatter), so we install from
-# the upstream tag directly. SHA for 4.9.2: ba85366644131d5f170cc7016d4ed99b9817889a
-theHarvester @ git+https://github.com/laramies/theHarvester.git@4.9.2
+# the upstream tag directly. Pinned to 4.8.2 because 4.9.x requires Python 3.12
+# and this project pins to 3.11 per CLAUDE.md §2/§8. SHA for 4.8.2:
+# b9eeef90cb5ae960abf8ccae874bba6673c1c688
+theHarvester @ git+https://github.com/laramies/theHarvester.git@4.8.2
