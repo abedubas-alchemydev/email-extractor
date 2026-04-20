@@ -54,7 +54,21 @@ interface VerifyResultItem {
   checked_at: string;
 }
 
-interface VerifyResponse {
+interface VerificationRunCreateResponse {
+  verify_run_id: number;
+  status: RunStatus;
+}
+
+interface VerificationRunResponse {
+  id: number;
+  status: RunStatus;
+  total_items: number;
+  processed_items: number;
+  success_count: number;
+  failure_count: number;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
   results: VerifyResultItem[];
 }
 
@@ -265,6 +279,7 @@ export default function Home(): React.ReactElement {
   const [verifyErrors, setVerifyErrors] = useState<Record<number, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startedAtRef = useRef<number>(0);
+  const verifyPollsRef = useRef<Map<number, ReturnType<typeof setInterval>>>(new Map());
 
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
@@ -273,32 +288,35 @@ export default function Home(): React.ReactElement {
     }
   }, []);
 
-  useEffect(() => () => stopPolling(), [stopPolling]);
+  const stopVerifyPoll = useCallback((emailId: number) => {
+    const handle = verifyPollsRef.current.get(emailId);
+    if (handle !== undefined) {
+      clearInterval(handle);
+      verifyPollsRef.current.delete(emailId);
+    }
+  }, []);
+
+  const stopAllVerifyPolls = useCallback(() => {
+    verifyPollsRef.current.forEach((handle) => clearInterval(handle));
+    verifyPollsRef.current.clear();
+  }, []);
+
+  useEffect(
+    () => () => {
+      stopPolling();
+      stopAllVerifyPolls();
+    },
+    [stopPolling, stopAllVerifyPolls],
+  );
 
   const isInFlight = scan !== null && !TERMINAL_STATUSES.has(scan.status) && !timedOut;
 
-  const handleVerify = useCallback(async (emailId: number) => {
-    setInFlightIds((prev) => {
-      const next = new Set(prev);
-      next.add(emailId);
-      return next;
-    });
-    setVerifyErrors((prev) => {
-      if (!(emailId in prev)) return prev;
-      const next = { ...prev };
-      delete next[emailId];
-      return next;
-    });
-
-    try {
-      const response = await api<VerifyResponse>("/api/v1/email-extractor/verify", {
-        method: "POST",
-        body: JSON.stringify({ email_ids: [emailId] }),
-      });
-      const result = response.results[0];
+  const finishVerify = useCallback(
+    (emailId: number, result: VerifyResultItem | undefined, errorMessage: string | null) => {
+      stopVerifyPoll(emailId);
       if (result) {
         const verification: EmailVerificationResponse = {
-          id: -1, // synthetic — not used for display, the cell keys off smtp_status
+          id: -1, // synthetic — display cell keys off smtp_status, not id
           syntax_valid: null,
           mx_record_present: null,
           smtp_status: result.smtp_status,
@@ -307,19 +325,76 @@ export default function Home(): React.ReactElement {
         };
         setLocalVerifications((prev) => ({ ...prev, [emailId]: verification }));
       }
-    } catch (err) {
-      setVerifyErrors((prev) => ({
-        ...prev,
-        [emailId]: err instanceof ApiError ? err.message : "verification failed",
-      }));
-    } finally {
+      if (errorMessage !== null) {
+        setVerifyErrors((prev) => ({ ...prev, [emailId]: errorMessage }));
+      }
       setInFlightIds((prev) => {
         const next = new Set(prev);
         next.delete(emailId);
         return next;
       });
-    }
-  }, []);
+    },
+    [stopVerifyPoll],
+  );
+
+  const handleVerify = useCallback(
+    async (emailId: number) => {
+      stopVerifyPoll(emailId);
+      setInFlightIds((prev) => {
+        const next = new Set(prev);
+        next.add(emailId);
+        return next;
+      });
+      setVerifyErrors((prev) => {
+        if (!(emailId in prev)) return prev;
+        const next = { ...prev };
+        delete next[emailId];
+        return next;
+      });
+
+      let verifyRunId: number;
+      try {
+        const created = await api<VerificationRunCreateResponse>(
+          "/api/v1/email-extractor/verify",
+          {
+            method: "POST",
+            body: JSON.stringify({ email_ids: [emailId] }),
+          },
+        );
+        verifyRunId = created.verify_run_id;
+      } catch (err) {
+        finishVerify(emailId, undefined, err instanceof ApiError ? err.message : "verification failed");
+        return;
+      }
+
+      const startedAt = Date.now();
+      const handle = setInterval(async () => {
+        try {
+          const run = await api<VerificationRunResponse>(
+            `/api/v1/email-extractor/verify-runs/${verifyRunId}`,
+          );
+          if (TERMINAL_STATUSES.has(run.status)) {
+            const result = run.results.find((r) => r.email_id === emailId);
+            const errorMessage =
+              run.status === "failed" ? run.error_message ?? "verification failed" : null;
+            finishVerify(emailId, result, errorMessage);
+            return;
+          }
+          if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+            finishVerify(emailId, undefined, "verification timed out");
+          }
+        } catch (pollErr) {
+          finishVerify(
+            emailId,
+            undefined,
+            pollErr instanceof ApiError ? pollErr.message : "verification failed",
+          );
+        }
+      }, POLL_INTERVAL_MS);
+      verifyPollsRef.current.set(emailId, handle);
+    },
+    [finishVerify, stopVerifyPoll],
+  );
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -327,6 +402,7 @@ export default function Home(): React.ReactElement {
     if (!cleaned) return;
 
     stopPolling();
+    stopAllVerifyPolls();
     setError(null);
     setTimedOut(false);
     setScan(null);

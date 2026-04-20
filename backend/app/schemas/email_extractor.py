@@ -79,7 +79,31 @@ class VerifyResultItem(BaseModel):
     checked_at: datetime
 
 
-class VerifyResponse(BaseModel):
-    """Returned by POST /api/v1/email-extractor/verify."""
+class VerificationRunCreateResponse(BaseModel):
+    """Returned by POST /api/v1/email-extractor/verify (202 Accepted).
 
-    results: list[VerifyResultItem]
+    Results are fetched by polling
+    GET /api/v1/email-extractor/verify-runs/{verify_run_id}.
+    """
+
+    verify_run_id: int
+    status: str
+
+
+class VerificationRunResponse(BaseModel):
+    """Returned by GET /api/v1/email-extractor/verify-runs/{run_id}.
+
+    `results` carries the latest `EmailVerification` per requested email_id
+    in the same order as the run's input `email_ids`.
+    """
+
+    id: int
+    status: str
+    total_items: int
+    processed_items: int
+    success_count: int
+    failure_count: int
+    error_message: str | None
+    created_at: datetime
+    completed_at: datetime | None
+    results: list[VerifyResultItem] = Field(default_factory=list)
