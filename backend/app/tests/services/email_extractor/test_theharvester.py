@@ -109,13 +109,13 @@ async def test_dedupe_and_lowercase(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_non_string_filtering(monkeypatch: pytest.MonkeyPatch) -> None:
     _setup_with_fake(
         monkeypatch,
-        _make_fake_run(emails=["good@x.com", 123, None, "no-at-sign", "another@x.com", {"x": 1}]),
+        _make_fake_run(emails=["not-an-email", "alice@x.com", None, 42, ""]),
     )
 
     result = await theharvester.TheHarvester().run("example.com")
 
-    emails = sorted(d.email for d in result.emails)
-    assert emails == ["another@x.com", "good@x.com"]
+    assert result.errors == []
+    assert [d.email for d in result.emails] == ["alice@x.com"]
 
 
 # --- Error branches --------------------------------------------------------
@@ -139,6 +139,15 @@ async def test_binary_not_installed_via_filenotfound(monkeypatch: pytest.MonkeyP
     assert result.errors == ["binary not installed"]
 
 
+async def test_subprocess_generic_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Generic Exception during subprocess invocation → bare 'subprocess error: <type>'."""
+    _setup_with_fake(monkeypatch, _make_fake_run(raise_exc=PermissionError("mock")))
+
+    result = await theharvester.TheHarvester().run("example.com")
+
+    assert result.errors == ["subprocess error: PermissionError"]
+
+
 async def test_no_sources_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_sources(monkeypatch, "   ")
     _patch_binary_present(monkeypatch)
@@ -156,7 +165,17 @@ async def test_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.errors == ["timeout"]
 
 
-async def test_non_zero_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_non_zero_exit_empty_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-zero exit with empty stderr falls back to '(no stderr)' marker."""
+    _setup_with_fake(monkeypatch, _make_fake_run(returncode=1, stderr="", skip_file=True))
+
+    result = await theharvester.TheHarvester().run("example.com")
+
+    assert result.errors == ["non-zero exit 1: (no stderr)"]
+
+
+async def test_non_zero_exit_with_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-zero exit with stderr content trims to last non-empty line."""
     _setup_with_fake(
         monkeypatch,
         _make_fake_run(returncode=2, stderr="some warning\nfatal: bad source\n", skip_file=True),
@@ -184,12 +203,25 @@ async def test_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.errors[0].startswith("invalid json:")
 
 
-async def test_no_emails_key(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_no_emails_key_yields_empty_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """theHarvester upstream omits the 'emails' key on zero-yield runs (tag 4.6.0
+    __main__.py:1210-1211). Missing key = empty success, not an error."""
     _setup_with_fake(monkeypatch, _make_fake_run(raw_payload={"hosts": []}))
 
     result = await theharvester.TheHarvester().run("example.com")
 
-    assert result.errors == ["no emails key in output"]
+    assert result.emails == []
+    assert result.errors == []
+
+
+async def test_emails_key_explicitly_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Guards the present-but-empty path so the missing-key fix doesn't regress it."""
+    _setup_with_fake(monkeypatch, _make_fake_run(raw_payload={"emails": [], "hosts": []}))
+
+    result = await theharvester.TheHarvester().run("example.com")
+
+    assert result.emails == []
+    assert result.errors == []
 
 
 async def test_emails_not_a_list(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -221,8 +253,16 @@ def _setup_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     _setup_with_fake(monkeypatch, _make_fake_run(raise_exc=TimeoutError()))
 
 
-def _setup_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+def _setup_nonzero_with_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
     _setup_with_fake(monkeypatch, _make_fake_run(returncode=1, stderr="oops\n", skip_file=True))
+
+
+def _setup_nonzero_empty_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    _setup_with_fake(monkeypatch, _make_fake_run(returncode=1, stderr="", skip_file=True))
+
+
+def _setup_subprocess_generic_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    _setup_with_fake(monkeypatch, _make_fake_run(raise_exc=PermissionError("mock")))
 
 
 def _setup_output_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,10 +271,6 @@ def _setup_output_missing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _setup_invalid_json(monkeypatch: pytest.MonkeyPatch) -> None:
     _setup_with_fake(monkeypatch, _make_fake_run(write_invalid_json=True))
-
-
-def _setup_no_emails_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    _setup_with_fake(monkeypatch, _make_fake_run(raw_payload={"hosts": []}))
 
 
 def _setup_emails_not_list(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,10 +284,11 @@ def _setup_emails_not_list(monkeypatch: pytest.MonkeyPatch) -> None:
         _setup_no_sources,
         _setup_filenotfound,
         _setup_timeout,
-        _setup_nonzero,
+        _setup_subprocess_generic_exception,
+        _setup_nonzero_empty_stderr,
+        _setup_nonzero_with_stderr,
         _setup_output_missing,
         _setup_invalid_json,
-        _setup_no_emails_key,
         _setup_emails_not_list,
     ],
 )

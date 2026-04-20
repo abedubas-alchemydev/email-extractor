@@ -88,15 +88,13 @@ class TheHarvester:
                 return DiscoveryResult(errors=["timeout"])
             except FileNotFoundError:
                 return DiscoveryResult(errors=["binary not installed"])
+            except Exception as exc:  # noqa: BLE001
+                return DiscoveryResult(errors=[f"subprocess error: {exc.__class__.__name__}"])
 
             if returncode != 0:
-                last_err = ""
-                for line in reversed(stderr.splitlines()):
-                    stripped = line.strip()
-                    if stripped:
-                        last_err = stripped[:STDERR_TAIL_CAP]
-                        break
-                return DiscoveryResult(errors=[f"non-zero exit {returncode}: {last_err}"])
+                hint_lines = (stderr or "").strip().splitlines()
+                hint_tail = hint_lines[-1][:STDERR_TAIL_CAP] if hint_lines else "(no stderr)"
+                return DiscoveryResult(errors=[f"non-zero exit {returncode}: {hint_tail}"])
 
             output_path = Path(f"{basename}.json")
             if not await asyncio.to_thread(output_path.exists):
@@ -108,10 +106,14 @@ class TheHarvester:
             except json.JSONDecodeError as exc:
                 return DiscoveryResult(errors=[f"invalid json: {exc}"])
 
-            if not isinstance(payload, dict) or "emails" not in payload:
-                return DiscoveryResult(errors=["no emails key in output"])
-
-            raw_emails = payload["emails"]
+            # theHarvester writes the `emails` key only when len(all_emails) > 0
+            # (upstream __main__.py @ tag 4.6.0 lines 1210-1211). Missing key
+            # means a clean zero-yield run, not a parse failure — return empty
+            # success and let the list-type check still catch malformed payloads
+            # that put a non-list under the `emails` key.
+            raw_emails = payload.get("emails", []) if isinstance(payload, dict) else None
+            if raw_emails is None:
+                return DiscoveryResult(errors=["payload not a dict"])
             if not isinstance(raw_emails, list):
                 return DiscoveryResult(errors=["emails field not a list"])
 
