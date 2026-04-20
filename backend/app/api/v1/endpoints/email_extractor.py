@@ -1,27 +1,26 @@
 from __future__ import annotations
 
-import asyncio
-from datetime import UTC, datetime
-
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.db.session import get_db_session
 from app.models.discovered_email import DiscoveredEmail
-from app.models.email_verification import EmailVerification, SmtpStatus
+from app.models.email_verification import EmailVerification
 from app.models.extraction_run import ExtractionRun, RunStatus
+from app.models.verification_run import VerificationRun
 from app.schemas.email_extractor import (
     ScanCreateRequest,
     ScanResponse,
+    VerificationRunCreateResponse,
+    VerificationRunResponse,
     VerifyRequest,
-    VerifyResponse,
     VerifyResultItem,
 )
 from app.services.email_extractor import aggregator
-from app.services.email_extractor.verification import check_smtp
+from app.services.email_extractor.verification_runner import run_smtp_verification
 
 router = APIRouter(prefix="/email-extractor", tags=["email-extractor"])
 
@@ -59,60 +58,107 @@ async def get_scan(
     return scan
 
 
-@router.post("/verify", response_model=VerifyResponse)
+@router.post(
+    "/verify",
+    response_model=VerificationRunCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def verify_emails(
     payload: VerifyRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db_session),
-) -> VerifyResponse:
+) -> VerificationRunCreateResponse:
     if len(payload.email_ids) > settings.smtp_verify_max_batch:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"batch size {len(payload.email_ids)} exceeds cap {settings.smtp_verify_max_batch}",
         )
 
-    rows = (await db.execute(select(DiscoveredEmail).where(DiscoveredEmail.id.in_(payload.email_ids)))).scalars().all()
-    by_id = {row.id: row for row in rows}
+    existing = await db.execute(select(DiscoveredEmail.id).where(DiscoveredEmail.id.in_(payload.email_ids)))
+    if existing.scalars().first() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no matching email_ids")
 
-    semaphore = asyncio.Semaphore(settings.smtp_verify_concurrency)
-    # AsyncSession isn't safe for concurrent add/flush across coroutines;
-    # serialize the DB-write window inside _verify_one while leaving SMTP
-    # probes free to parallelize through the semaphore. Writes are microseconds
-    # vs probe-seconds, so contention is negligible.
-    db_lock = asyncio.Lock()
-
-    async def _verify_one(discovered: DiscoveredEmail) -> VerifyResultItem:
-        async with semaphore:
-            smtp_status, smtp_message = await check_smtp(discovered.email)
-        async with db_lock:
-            verification = EmailVerification(
-                discovered_email_id=discovered.id,
-                smtp_status=smtp_status.value,
-                smtp_message=smtp_message,
-            )
-            db.add(verification)
-            await db.flush()
-            await db.refresh(verification)
-            return VerifyResultItem(
-                email_id=discovered.id,
-                email=discovered.email,
-                smtp_status=verification.smtp_status,
-                smtp_message=verification.smtp_message,
-                checked_at=verification.checked_at,
-            )
-
-    async def _resolve(email_id: int) -> VerifyResultItem:
-        discovered = by_id.get(email_id)
-        if discovered is None:
-            # Unknown ID — surface a synthetic item rather than 404'ing the whole batch.
-            return VerifyResultItem(
-                email_id=email_id,
-                email=None,
-                smtp_status=SmtpStatus.not_checked.value,
-                smtp_message="email_id not found",
-                checked_at=datetime.now(UTC),
-            )
-        return await _verify_one(discovered)
-
-    results = await asyncio.gather(*(_resolve(eid) for eid in payload.email_ids))
+    run = VerificationRun(
+        email_ids=list(payload.email_ids),
+        status=RunStatus.queued.value,
+        total_items=len(payload.email_ids),
+    )
+    db.add(run)
     await db.commit()
-    return VerifyResponse(results=list(results))
+    await db.refresh(run)
+
+    background_tasks.add_task(
+        run_smtp_verification,
+        verify_run_id=run.id,
+        email_ids=list(payload.email_ids),
+    )
+    return VerificationRunCreateResponse(verify_run_id=run.id, status=run.status)
+
+
+@router.get("/verify-runs/{run_id}", response_model=VerificationRunResponse)
+async def get_verify_run(
+    run_id: int,
+    db: AsyncSession = Depends(get_db_session),
+) -> VerificationRunResponse:
+    run = await db.get(VerificationRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="verify run not found")
+
+    requested_ids: list[int] = list(run.email_ids or [])
+
+    # Latest EmailVerification per discovered_email_id, scoped to this run's ids.
+    # Postgres window function picks row_number()=1 per group ordered by checked_at desc.
+    results: list[VerifyResultItem] = []
+    if requested_ids:
+        ranked = (
+            select(
+                EmailVerification.discovered_email_id.label("discovered_email_id"),
+                EmailVerification.smtp_status.label("smtp_status"),
+                EmailVerification.smtp_message.label("smtp_message"),
+                EmailVerification.checked_at.label("checked_at"),
+                DiscoveredEmail.email.label("email"),
+                func.row_number()
+                .over(
+                    partition_by=EmailVerification.discovered_email_id,
+                    order_by=EmailVerification.checked_at.desc(),
+                )
+                .label("rn"),
+            )
+            .join(DiscoveredEmail, DiscoveredEmail.id == EmailVerification.discovered_email_id)
+            .where(EmailVerification.discovered_email_id.in_(requested_ids))
+            .subquery()
+        )
+
+        latest_stmt = select(
+            ranked.c.discovered_email_id,
+            ranked.c.smtp_status,
+            ranked.c.smtp_message,
+            ranked.c.checked_at,
+            ranked.c.email,
+        ).where(ranked.c.rn == 1)
+        rows = (await db.execute(latest_stmt)).all()
+
+        by_email_id: dict[int, VerifyResultItem] = {}
+        for row in rows:
+            by_email_id[row.discovered_email_id] = VerifyResultItem(
+                email_id=row.discovered_email_id,
+                email=row.email,
+                smtp_status=row.smtp_status,
+                smtp_message=row.smtp_message,
+                checked_at=row.checked_at,
+            )
+
+        results = [by_email_id[eid] for eid in requested_ids if eid in by_email_id]
+
+    return VerificationRunResponse(
+        id=run.id,
+        status=run.status,
+        total_items=run.total_items,
+        processed_items=run.processed_items,
+        success_count=run.success_count,
+        failure_count=run.failure_count,
+        error_message=run.error_message,
+        created_at=run.created_at,
+        completed_at=run.completed_at,
+        results=results,
+    )
