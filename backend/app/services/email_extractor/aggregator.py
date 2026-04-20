@@ -41,13 +41,13 @@ logger = logging.getLogger(__name__)
 _ERROR_MESSAGE_CHAR_CAP = 4000
 
 
-def _default_providers() -> list[EmailSource]:
+def default_providers() -> list[EmailSource]:
     return [SiteCrawler(), Hunter(), TheHarvester(), Snov()]
 
 
 async def run(run_id: int, providers: list[EmailSource] | None = None) -> None:
     if providers is None:
-        providers = _default_providers()
+        providers = default_providers()
 
     domain = await _begin_run(run_id)
     if domain is None:

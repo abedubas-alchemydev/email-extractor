@@ -129,6 +129,18 @@ async def test_all_providers_raise_marks_run_failed(monkeypatch: pytest.MonkeyPa
         assert "p1" in scan.error_message and "p2" in scan.error_message
 
 
+def test_default_providers_includes_all_four_sources() -> None:
+    """Regression: every provider class shipped under services/email_extractor/
+    must be wired into the production fan-out. Set-equality (not subset) so
+    accidental additions / removals also fail and force an explicit test
+    update — the safeguard against the "wired but not mounted" bug pattern
+    that would have hidden Snov from production scans had aggregator.py's
+    PR #10 edit been omitted (caught by the 1500 VPS smoke as a stale image).
+    """
+    names = {type(p).__name__ for p in aggregator.default_providers()}
+    assert names == {"SiteCrawler", "Hunter", "TheHarvester", "Snov"}
+
+
 async def test_provider_error_gets_single_provider_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     """ADR 0002: provider emits bare error; aggregator wraps with exactly one '<name>: ' prefix."""
     _stub_verification(monkeypatch)
