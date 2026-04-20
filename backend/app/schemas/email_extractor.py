@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ScanCreateRequest(BaseModel):
@@ -55,3 +55,31 @@ class ScanResponse(BaseModel):
     discovered_emails: list[DiscoveredEmailResponse] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class VerifyRequest(BaseModel):
+    """Inbound payload for POST /api/v1/email-extractor/verify."""
+
+    email_ids: list[int] = Field(min_length=1, description="DiscoveredEmail.id values to verify")
+
+    @model_validator(mode="after")
+    def _no_duplicates(self) -> VerifyRequest:
+        if len(self.email_ids) != len(set(self.email_ids)):
+            raise ValueError("email_ids must not contain duplicates")
+        return self
+
+
+class VerifyResultItem(BaseModel):
+    """One row in the /verify response, in request order."""
+
+    email_id: int
+    email: str | None
+    smtp_status: str
+    smtp_message: str | None
+    checked_at: datetime
+
+
+class VerifyResponse(BaseModel):
+    """Returned by POST /api/v1/email-extractor/verify."""
+
+    results: list[VerifyResultItem]

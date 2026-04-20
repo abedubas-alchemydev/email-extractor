@@ -48,6 +48,17 @@ class Settings(BaseSettings):
     snov_client_secret: str | None = None
     snov_limit: int = Field(default=100, ge=1, le=1000)
 
+    # SMTP verification (POST /verify) — knobs for the per-email RCPT TO probe.
+    # Concurrency defaults to 1 (fully serial) to avoid tripping target MTAs;
+    # raise per-domain later once probe behaviour is measured. The HELO host
+    # and FROM address default to a non-routable identity; swap to a real
+    # mailbox once SPF/DKIM is set up for the Email Extractor sender domain.
+    smtp_verify_timeout_seconds: int = Field(default=15, ge=5, le=60)
+    smtp_verify_max_batch: int = Field(default=25, ge=1, le=100)
+    smtp_verify_concurrency: int = Field(default=1, ge=1, le=10)
+    smtp_verify_from_address: str = "verify@email-extractor.local"
+    smtp_verify_helo_host: str = "email-extractor.local"
+
     @computed_field
     @property
     def cors_origins(self) -> list[str]:
