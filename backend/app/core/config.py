@@ -25,8 +25,15 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/email_extractor"
     backend_cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
-    # Standalone Bearer auth — replaced by BetterAuth on merge into fis-lead-gen.
+    # Standalone Bearer auth (legacy; endpoints now gate on BetterAuth via
+    # _require_email_extractor — see services/auth.py).
     email_extractor_api_key: str | None = None
+
+    # BetterAuth session validation. auth_secret signs the session cookie and is
+    # shared with the frontend's BETTER_AUTH_SECRET; the cookie name is
+    # BetterAuth's default. Both are read by services/auth.py.
+    auth_secret: str = Field(default="email-extractor-local-dev-secret-change-me", alias="BETTER_AUTH_SECRET")
+    auth_session_cookie_name: str = "better-auth.session_token"
 
     # Discovery provider API keys — optional during scaffold phase.
     hunter_api_key: str | None = None
