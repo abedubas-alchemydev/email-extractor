@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -12,6 +12,13 @@ from app.db.base import Base
 if TYPE_CHECKING:
     from app.models.email_verification import EmailVerification
     from app.models.extraction_run import ExtractionRun
+
+
+# How long the "finding phone…" spinner may stay up after a reveal is requested.
+# Apollo's async phone-reveal callback normally lands in seconds; this generous
+# ceiling bounds the wait so a row stops spinning when the callback never arrives
+# (ephemeral person id, no mobile on file, dropped webhook).
+PHONE_REVEAL_TTL = timedelta(minutes=15)
 
 
 class DiscoverySource(StrEnum):
@@ -65,3 +72,35 @@ class DiscoveredEmail(Base):
     verifications: Mapped[list[EmailVerification]] = relationship(
         back_populates="discovered_email", cascade="all, delete-orphan", lazy="selectin"
     )
+
+    @property
+    def phone_reveal_pending(self) -> bool:
+        """True while an async Apollo phone-reveal callback is still expected.
+
+        The row enriched and captured an ``apollo_person_id`` but has no phone
+        yet, the reveal flow is configured (so a webhook will arrive), AND the
+        reveal was requested within the last :data:`PHONE_REVEAL_TTL`. Lets the
+        UI show "finding phone…" while a number may still land, then stop once
+        the window lapses instead of spinning forever when Apollo never calls
+        back. A row with ``phone_reveal_requested_at IS NULL`` is never pending.
+        """
+        from app.services.contact_discovery._shared import (
+            apollo_phone_reveal_configured,
+        )
+
+        if not (
+            self.enrichment_status == "enriched"
+            and self.enriched_phone is None
+            and self.apollo_person_id is not None
+            and apollo_phone_reveal_configured()
+        ):
+            return False
+
+        requested_at = self.phone_reveal_requested_at
+        if requested_at is None:
+            return False
+        # Stored tz-aware, but tolerate a tz-naive value (some drivers hand one
+        # back) by reading it as UTC so the subtraction can't raise.
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=UTC)
+        return datetime.now(UTC) - requested_at < PHONE_REVEAL_TTL
