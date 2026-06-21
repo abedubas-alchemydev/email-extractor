@@ -59,6 +59,32 @@ class Settings(BaseSettings):
     smtp_verify_from_address: str = "verify@email-extractor.local"
     smtp_verify_helo_host: str = "email-extractor.local"
 
+    # --- Enrichment providers (Phase 2: contact-enrichment layer) ---
+    # All optional/None-defaulted: each provider stays dormant until its key is
+    # set, so discovery works with none of these configured. Names + defaults
+    # mirror the DOX parent so the enrichment code ports without churn.
+    apollo_api_key: str | None = None
+    apollo_webhook_secret: str | None = None
+    apollo_enrich_cooldown_hours: int = 24
+    apollo_director_linkedin_fallback: bool = True
+    serpapi_api_key: str | None = None
+    pdl_api_key: str | None = None
+    pdl_min_likelihood: int = 6
+    # Public origin for async callbacks. The Apollo phone-reveal webhook URL is
+    # f"{public_base_url}/api/v1/webhooks/apollo/{apollo_webhook_secret}/phone-reveal".
+    # Both this and apollo_webhook_secret must be set for phone-reveal to activate.
+    public_base_url: str | None = None
+    # Provider chains (comma-separated, env-overridable). Discovery is unaffected;
+    # these drive the Phase 2 enrichment + contact-discovery fan-out.
+    contact_discovery_chain: str = "apollo_match,hunter,snov"
+    contact_discovery_min_confidence: float = 60.0
+    contact_discovery_timeout: float = 10.0
+    snov_request_timeout: float = 12.0
+    web_fallback_enabled: bool = False
+    web_fallback_phones_enabled: bool = False
+    web_fallback_email_confidence: float = 70.0
+    email_enrichment_chain: str = "apollo,hunter,snov,name_lookup,web_scraper"
+
     @computed_field
     @property
     def cors_origins(self) -> list[str]:
