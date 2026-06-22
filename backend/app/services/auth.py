@@ -58,7 +58,12 @@ async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ) -> AuthenticatedUser:
-    session_token = _decode_signed_session_cookie(request.cookies.get(settings.auth_session_cookie_name))
+    # BetterAuth prefixes the cookie with `__Secure-` when secure cookies are on
+    # (production / HTTPS) and uses the bare name in dev (HTTP). Check the secure
+    # name first, then fall back — so one backend validates sessions in both.
+    cookie_name = settings.auth_session_cookie_name
+    raw_cookie = request.cookies.get(f"__Secure-{cookie_name}") or request.cookies.get(cookie_name)
+    session_token = _decode_signed_session_cookie(raw_cookie)
     if not session_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
 
