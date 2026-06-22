@@ -56,6 +56,17 @@ nginx -t && systemctl reload nginx
 ```bash
 ssh root@76.13.22.110 'cd /opt/extractor && bash deploy/deploy.sh'
 ```
+A code-only redeploy rebuilds just the changed Docker layer (cheap). To rebuild a
+single service and halve peak RAM: `docker compose -f docker-compose.prod.yml --env-file .env up -d --build backend` (or `frontend`).
+
+## Building on the shared box (memory)
+This is a shared ~7.8 GB box. A **full/clean** image build — especially the frontend
+`next build` — briefly spikes RAM and can pressure co-tenant containers (observed: a
+few Docker tenants bounced + recovered during the first build; the pm2 apps incl.
+`app.logisx.com` were unaffected). Keep peak low:
+- Build **one service at a time** (`up -d --build backend`, then `... frontend`) rather than both at once.
+- Or build images **off-box** (CI / a dev machine), push to a registry, and `docker compose ... pull` on the VPS so the box never sees the build spike.
+- Incremental redeploys (code changes) only rebuild the final layer, so this is a one-time, first-build concern.
 
 ## Rollback
 ```bash
