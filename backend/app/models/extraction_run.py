@@ -44,7 +44,17 @@ class ExtractionRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Stamped when a user cancels an in-flight bulk-enrichment run (Phase 2).
+    # Inert until the enrichment layer reads it; carried now for a single migration.
+    enrich_cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     discovered_emails: Mapped[list[DiscoveredEmail]] = relationship(
-        back_populates="run", cascade="all, delete-orphan", lazy="selectin"
+        back_populates="run",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        # Stable ascending-by-id (discovery) order so the results table doesn't
+        # reshuffle across pages when a row is mutated (e.g. enriched) and the
+        # collection is re-selected -- Postgres returns unstable physical order
+        # otherwise, which made a just-enriched row jump pages on refetch.
+        order_by="DiscoveredEmail.id",
     )

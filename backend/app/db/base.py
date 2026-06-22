@@ -11,6 +11,7 @@ class Base(DeclarativeBase):
 # autogenerate sees them. Order matters only when relationships are declared
 # without string-form forward references.
 from app.models import (  # noqa: E402,F401
+    auth,
     discovered_email,
     email_verification,
     extraction_run,

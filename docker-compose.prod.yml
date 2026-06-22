@@ -1,0 +1,90 @@
+# Production stack for extractor.alchemydev.io on the SHARED VPS (76.13.22.110).
+#
+# Coexists with the old email-extractor.abedubas.dev stack and other tenants:
+#   - distinct compose project name (`extractor`) + container names (extractor-*)
+#   - fresh LOOPBACK-only host ports: frontend 3011, backend 8002, postgres 5434
+#     (3010/8000/5432 belong to the old stack; 3000-3005/8080-8083/5433 to others)
+#   - its own named volume (extractor-pg-data)
+# The host's nginx terminates TLS for extractor.alchemydev.io and reverse-proxies
+# to these loopback ports (see deploy/nginx/extractor.alchemydev.io.conf).
+#
+# Usage on the box (from /opt/extractor):
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+#   docker compose -f docker-compose.prod.yml --env-file .env run --rm backend alembic upgrade head
+name: extractor
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: extractor-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-email_extractor}
+    ports:
+      - "127.0.0.1:5434:5432" # loopback ONLY — never expose Postgres publicly
+    volumes:
+      - extractor_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-email_extractor}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: extractor-backend
+    restart: unless-stopped
+    environment:
+      # SQLAlchemy / psycopg URL for the FastAPI backend.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-email_extractor}
+      BACKEND_CORS_ORIGINS: https://extractor.alchemydev.io
+      # Backend verifies the BetterAuth session-cookie HMAC — MUST equal the
+      # frontend's BETTER_AUTH_SECRET.
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+      # Apollo async phone-reveal callback origin + secret (optional).
+      PUBLIC_BASE_URL: https://extractor.alchemydev.io
+      APOLLO_WEBHOOK_SECRET: ${APOLLO_WEBHOOK_SECRET:-}
+      # Enrichment providers — each stays dormant until its key is set.
+      APOLLO_API_KEY: ${APOLLO_API_KEY:-}
+      PDL_API_KEY: ${PDL_API_KEY:-}
+      SERPAPI_API_KEY: ${SERPAPI_API_KEY:-}
+      HUNTER_API_KEY: ${HUNTER_API_KEY:-}
+      SNOV_CLIENT_ID: ${SNOV_CLIENT_ID:-}
+      SNOV_CLIENT_SECRET: ${SNOV_CLIENT_SECRET:-}
+      PORT: "8000"
+    ports:
+      - "127.0.0.1:8002:8000" # loopback; nginx proxies /api/v1/* here
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: "" # same-origin /api/* (nginx + BetterAuth route it)
+    container_name: extractor-frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ""
+      NODE_ENV: production
+      ENVIRONMENT: production # flips BetterAuth useSecureCookies on
+      # BetterAuth uses the node 'pg' driver → PLAIN postgresql:// scheme
+      # (NOT +psycopg). Same database as the backend, different URL shape.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-email_extractor}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?}
+      BETTER_AUTH_URL: https://extractor.alchemydev.io
+      NEXT_PUBLIC_APP_URL: https://extractor.alchemydev.io
+    ports:
+      - "127.0.0.1:3011:3000" # loopback; nginx proxies / and /api/auth/* here
+    depends_on:
+      - backend
+
+volumes:
+  extractor_pg_data:
+    name: extractor-pg-data

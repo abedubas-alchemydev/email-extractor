@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -30,6 +31,17 @@ class DiscoveredEmailResponse(BaseModel):
     source: str
     confidence: float | None
     attribution: str | None
+    enriched_name: str | None = None
+    enriched_title: str | None = None
+    enriched_linkedin_url: str | None = None
+    enriched_company: str | None = None
+    enriched_email: str | None = None
+    enriched_phone: str | None = None
+    enriched_at: datetime | None = None
+    enrichment_status: str = "not_enriched"
+    # Computed on the model: True while an async phone-reveal callback is still
+    # expected, so the UI can poll for the number without polling forever.
+    phone_reveal_pending: bool = False
     created_at: datetime
     verifications: list[EmailVerificationResponse] = Field(default_factory=list)
 
@@ -52,6 +64,7 @@ class ScanResponse(BaseModel):
     created_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
+    enrich_cancelled_at: datetime | None = None
     discovered_emails: list[DiscoveredEmailResponse] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
@@ -107,3 +120,39 @@ class VerificationRunResponse(BaseModel):
     created_at: datetime
     completed_at: datetime | None
     results: list[VerifyResultItem] = Field(default_factory=list)
+
+
+class EnrichAllResponse(BaseModel):
+    """Returned by POST /api/v1/email-extractor/scans/{run_id}/enrich-all (202 Accepted).
+
+    Frontend polls GET /api/v1/email-extractor/scans/{run_id} for per-row
+    progress; this body is the "what's about to run" handshake.
+    """
+
+    scan_id: int
+    candidates_total: int
+    candidates_skipped_already_enriched: int
+    candidates_queued: int
+    status: Literal["queued"]
+
+
+class ScanListItem(BaseModel):
+    """One row in the GET /api/v1/email-extractor/scans list endpoint.
+
+    Strictly a summary shape — callers open a specific scan to see the full
+    `discovered_emails` payload. FK-free: no bd_id/advisor_id in the standalone.
+    """
+
+    id: int
+    domain: str
+    person_name: str | None
+    status: str
+    total_items: int
+    processed_items: int
+    success_count: int
+    failure_count: int
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)

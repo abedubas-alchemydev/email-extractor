@@ -1,28 +1,54 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.feature_permissions import EMAIL_EXTRACTOR
 from app.db.session import get_db_session
 from app.models.discovered_email import DiscoveredEmail
 from app.models.email_verification import EmailVerification
 from app.models.extraction_run import ExtractionRun, RunStatus
 from app.models.verification_run import VerificationRun
+from app.schemas.auth import AuthenticatedUser
 from app.schemas.email_extractor import (
+    DiscoveredEmailResponse,
+    EnrichAllResponse,
     ScanCreateRequest,
+    ScanListItem,
     ScanResponse,
     VerificationRunCreateResponse,
     VerificationRunResponse,
     VerifyRequest,
     VerifyResultItem,
 )
+from app.services.auth import ensure_feature, get_current_user
 from app.services.email_extractor import aggregator
+from app.services.email_extractor.bulk_enrichment import run_bulk_enrichment
+from app.services.email_extractor.enrichment import (
+    NOT_CONFIGURED_MESSAGE,
+    NOT_FOUND_MESSAGE,
+    EnrichmentError,
+    any_provider_configured,
+    enrich_discovered_email,
+)
 from app.services.email_extractor.verification_runner import run_smtp_verification
 
 router = APIRouter(prefix="/email-extractor", tags=["email-extractor"])
+
+
+def _require_email_extractor(
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthenticatedUser:
+    """Gate every email-extractor route on a valid BetterAuth session plus the
+    email_extractor feature. (The Apollo webhook is intentionally NOT gated this
+    way — it authenticates via the secret embedded in its URL path.)"""
+    ensure_feature(user, EMAIL_EXTRACTOR)
+    return user
 
 
 @router.post("/scans", status_code=status.HTTP_202_ACCEPTED, response_model=ScanResponse)
@@ -30,6 +56,7 @@ async def create_scan(
     payload: ScanCreateRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db_session),
+    current_user: AuthenticatedUser = Depends(_require_email_extractor),
 ) -> ExtractionRun:
     scan = ExtractionRun(
         domain=payload.domain,
@@ -43,10 +70,148 @@ async def create_scan(
     return scan
 
 
+@router.get("/scans", response_model=list[ScanListItem])
+async def list_scans(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db_session),
+    current_user: AuthenticatedUser = Depends(_require_email_extractor),
+) -> list[ExtractionRun]:
+    """Recent scans, newest first.
+
+    Summary shape only — open a specific scan (GET /scans/{run_id}) to see the
+    full discovered_emails payload.
+    """
+    stmt = select(ExtractionRun).order_by(ExtractionRun.created_at.desc()).offset(offset).limit(limit)
+    return list((await db.execute(stmt)).scalars().all())
+
+
+@router.post(
+    "/discovered-emails/{discovered_email_id}/enrich",
+    response_model=DiscoveredEmailResponse,
+)
+async def enrich_email(
+    discovered_email_id: int,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: AuthenticatedUser = Depends(_require_email_extractor),
+) -> DiscoveredEmail:
+    """Enrich a discovered email with the person behind it -- name, title,
+    company, LinkedIn, an alternate email, and phone -- by walking the
+    enrichment provider chain. Writes the merged result onto the row itself.
+
+    Errors stay provider-agnostic on the wire: a failure surfaces a generic
+    message, never the specific provider that failed.
+    """
+    try:
+        return await enrich_discovered_email(db, discovered_email_id)
+    except EnrichmentError as exc:
+        message = str(exc)
+        if message == NOT_FOUND_MESSAGE:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="This email no longer exists.",
+            ) from exc
+        if message == NOT_CONFIGURED_MESSAGE:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Enrichment is not configured on this deployment.",
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Couldn't complete enrichment — please try again.",
+        ) from exc
+
+
+@router.post(
+    "/scans/{run_id}/enrich-all",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=EnrichAllResponse,
+)
+async def enrich_all_for_scan(
+    run_id: int,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: AuthenticatedUser = Depends(_require_email_extractor),
+) -> EnrichAllResponse:
+    """Enqueue per-row enrichment for every unenriched email in a scan.
+
+    Returns 202 immediately with a snapshot of what's queued so the frontend
+    can display "Enriching N..." before polling GET /scans/{run_id} for per-row
+    progress. Each row walks the enrichment provider chain; per-email failures
+    are isolated by the background task so one bad row never aborts the batch.
+    """
+    scan = await db.get(ExtractionRun, run_id)
+    if scan is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan not found")
+
+    if not any_provider_configured():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Enrichment is not configured on this deployment.",
+        )
+
+    total_stmt = select(func.count(DiscoveredEmail.id)).where(DiscoveredEmail.run_id == run_id)
+    already_stmt = select(func.count(DiscoveredEmail.id)).where(
+        DiscoveredEmail.run_id == run_id,
+        DiscoveredEmail.enrichment_status == "enriched",
+    )
+    total = int((await db.execute(total_stmt)).scalar_one())
+    already = int((await db.execute(already_stmt)).scalar_one())
+    queued = total - already
+
+    # Clear any prior cancel so a re-run isn't immediately short-circuited by
+    # the bulk loop's per-row cancel check.
+    if scan.enrich_cancelled_at is not None:
+        scan.enrich_cancelled_at = None
+        await db.commit()
+
+    background_tasks.add_task(run_bulk_enrichment, run_id)
+
+    return EnrichAllResponse(
+        scan_id=run_id,
+        candidates_total=total,
+        candidates_skipped_already_enriched=already,
+        candidates_queued=queued,
+        status="queued",
+    )
+
+
+@router.post(
+    "/scans/{run_id}/enrich-all/cancel",
+    response_model=ScanResponse,
+)
+async def cancel_enrich_all_for_scan(
+    run_id: int,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: AuthenticatedUser = Depends(_require_email_extractor),
+) -> ExtractionRun:
+    """Stamp ``enrich_cancelled_at`` so the bulk enrichment loop exits on its
+    next iteration.
+
+    Idempotent: re-calling with an already-cancelled scan leaves the original
+    timestamp in place. Already-enriched rows are preserved — nothing here rolls
+    back per-row state.
+    """
+    stmt = (
+        select(ExtractionRun).where(ExtractionRun.id == run_id).options(selectinload(ExtractionRun.discovered_emails))
+    )
+    scan = (await db.execute(stmt)).scalar_one_or_none()
+    if scan is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="scan not found")
+
+    if scan.enrich_cancelled_at is None:
+        scan.enrich_cancelled_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(scan)
+
+    return scan
+
+
 @router.get("/scans/{run_id}", response_model=ScanResponse)
 async def get_scan(
     run_id: int,
     db: AsyncSession = Depends(get_db_session),
+    current_user: AuthenticatedUser = Depends(_require_email_extractor),
 ) -> ExtractionRun:
     stmt = (
         select(ExtractionRun).where(ExtractionRun.id == run_id).options(selectinload(ExtractionRun.discovered_emails))
@@ -67,6 +232,7 @@ async def verify_emails(
     payload: VerifyRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db_session),
+    current_user: AuthenticatedUser = Depends(_require_email_extractor),
 ) -> VerificationRunCreateResponse:
     if len(payload.email_ids) > settings.smtp_verify_max_batch:
         raise HTTPException(
@@ -99,6 +265,7 @@ async def verify_emails(
 async def get_verify_run(
     run_id: int,
     db: AsyncSession = Depends(get_db_session),
+    current_user: AuthenticatedUser = Depends(_require_email_extractor),
 ) -> VerificationRunResponse:
     run = await db.get(VerificationRun, run_id)
     if run is None:
