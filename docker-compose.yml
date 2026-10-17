@@ -32,7 +32,8 @@ services:
       SNOV_API_KEY: ${SNOV_API_KEY:-}
       PORT: "8000"
     ports:
-      - "8000:8000"
+      # Loopback only (2026-10-17): nginx (email-extractor.abedubas.dev) is the public way in.
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -51,7 +52,8 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ""
       BACKEND_INTERNAL_URL: http://backend:8000
     ports:
-      - "${FRONTEND_HOST_PORT:-3000}:3000"
+      # Loopback only (2026-10-17): nginx (email-extractor.abedubas.dev) is the public way in.
+      - "127.0.0.1:${FRONTEND_HOST_PORT:-3000}:3000"
     depends_on:
       - backend
 
