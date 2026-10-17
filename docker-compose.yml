@@ -23,6 +23,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: email-extractor-backend
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-email_extractor}
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
@@ -47,6 +48,7 @@ services:
         # nginx terminates /api/* before it reaches the Next.js server.
         NEXT_PUBLIC_API_BASE_URL: ""
     container_name: email-extractor-frontend
+    restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_BASE_URL: ""
       BACKEND_INTERNAL_URL: http://backend:8000
